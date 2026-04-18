@@ -1,0 +1,19 @@
+# The enrollment chatbot can call the data product API
+# to fetch student data when the LLM requests it via function calling.
+# Uses targetRefs (L7 enforcement at the waypoint) to preserve original caller identity.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: chatbot-to-data-product
+  namespace: wgu-demo
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: data-product-api
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - "*/ns/wgu-demo-frontend/sa/enrollment-chatbot"

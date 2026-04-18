@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enrollment-chatbot
+  namespace: wgu-demo-frontend
+---
+# RBAC for the demo UI to read/manage mesh policies
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: enrollment-chatbot-mesh-demo
+rules:
+- apiGroups: ["security.istio.io"]
+  resources: ["authorizationpolicies"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: enrollment-chatbot-mesh-demo
+subjects:
+- kind: ServiceAccount
+  name: enrollment-chatbot
+  namespace: wgu-demo-frontend
+roleRef:
+  kind: ClusterRole
+  name: enrollment-chatbot-mesh-demo
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enrollment-chatbot
+  namespace: wgu-demo-frontend
+  labels:
+    app: enrollment-chatbot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: enrollment-chatbot
+  template:
+    metadata:
+      labels:
+        app: enrollment-chatbot
+    spec:
+      serviceAccountName: enrollment-chatbot
+      containers:
+      - name: enrollment-chatbot
+        image: ably7/enrollment-chatbot:0.0.15
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8501
+          name: http
+        env:
+        - name: GATEWAY_IP
+          value: "agentgateway-proxy.agentgateway-system.svc.cluster.local"
+        - name: GATEWAY_PORT
+          value: "8080"
+        - name: GATEWAY_PROTOCOL
+          value: "http"
+        - name: ORG_NAME
+          value: "Western Governors University (WGU)"
+        - name: ORG_SHORT
+          value: "WGU"
+        - name: APP_TITLE
+          value: "WGU Enrollment Advisor"
+        - name: DATA_PRODUCT_URL
+          value: "http://data-product-api.wgu-demo.svc.cluster.local:8080"
+        - name: GRAPH_DB_URL
+          value: "http://graph-db-mock.wgu-demo.svc.cluster.local:8081"
+        - name: NS_BACKEND
+          value: "wgu-demo"
+        - name: NS_FRONTEND
+          value: "wgu-demo-frontend"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enrollment-chatbot
+  namespace: wgu-demo-frontend
+  labels:
+    app: enrollment-chatbot
+  # AWS/EKS: Add annotation for NLB:
+  # annotations:
+  #   service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+spec:
+  type: ClusterIP  # AWS/EKS: Change to LoadBalancer
+  selector:
+    app: enrollment-chatbot
+  ports:
+  - name: http
+    port: 8501
+    targetPort: 8501

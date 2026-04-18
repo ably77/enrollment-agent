@@ -1,0 +1,20 @@
+# Only the data product API can query the graph database.
+# This is the innermost FERPA boundary — raw student graph data
+# is only accessible to the authorized data product service.
+# Uses targetRefs (L7 enforcement at the waypoint) to preserve original caller identity.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: data-product-to-graphdb
+  namespace: wgu-demo
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: graph-db-mock
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - "*/ns/wgu-demo/sa/data-product-api"

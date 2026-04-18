@@ -1,0 +1,17 @@
+# Allow the waypoint proxy to reach backend services at L4 (ztunnel hop).
+# The waypoint makes a second HBONE connection to the destination pod.
+# Without this, the deny-all policy blocks the waypoint's outbound connections.
+# Actual authorization (who can call what) is enforced at L7 by the
+# targetRefs policies on individual services.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: waypoint-to-backends
+  namespace: wgu-demo
+spec:
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - "*/ns/wgu-demo/sa/wgu-demo-waypoint"

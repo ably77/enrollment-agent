@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: graph-db-mock
+  namespace: wgu-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graph-db-mock
+  namespace: wgu-demo
+  labels:
+    app: graph-db-mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: graph-db-mock
+  template:
+    metadata:
+      labels:
+        app: graph-db-mock
+    spec:
+      serviceAccountName: graph-db-mock
+      containers:
+      - name: graph-db-mock
+        image: ably7/graph-db-mock:0.0.3
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8081
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: graph-db-mock
+  namespace: wgu-demo
+  labels:
+    app: graph-db-mock
+  # AWS/EKS: No annotations needed — internal service
+spec:
+  selector:
+    app: graph-db-mock
+  ports:
+  - name: http
+    port: 8081
+    targetPort: 8081

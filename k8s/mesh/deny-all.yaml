@@ -1,0 +1,17 @@
+# Deny-all baseline: no service can talk to anything unless explicitly allowed.
+# This is the FERPA boundary — student data is locked down by default.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: wgu-demo
+spec:
+  {}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: wgu-demo-frontend
+spec:
+  {}

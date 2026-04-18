@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: data-product-api
+  namespace: wgu-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-product-api
+  namespace: wgu-demo
+  labels:
+    app: data-product-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-product-api
+  template:
+    metadata:
+      labels:
+        app: data-product-api
+    spec:
+      serviceAccountName: data-product-api
+      containers:
+      - name: data-product-api
+        image: ably7/data-product-api:0.0.1
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: GRAPH_DB_URL
+          value: "http://graph-db-mock.wgu-demo.svc.cluster.local:8081"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-product-api
+  namespace: wgu-demo
+  labels:
+    app: data-product-api
+spec:
+  selector:
+    app: data-product-api
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
