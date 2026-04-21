@@ -27,10 +27,19 @@ kubectl delete -f k8s/mesh/ --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2
 kubectl delete -f k8s/gateway/ --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 kubectl delete -f k8s/namespaces.yaml --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 
+# --- Delete WGU demo resources on cluster2 ---
+echo "--- Deleting WGU demo resources on cluster2 ---"
+kubectl delete -f k8s/services/data-product-api.yaml --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
+kubectl delete -f k8s/services/graph-db-mock.yaml --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
+kubectl delete -f k8s/mesh/ --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
+kubectl delete -f k8s/namespaces.yaml --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
+
 # --- Delete agent gateway ---
 echo "--- Uninstalling Enterprise Agentgateway ---"
 kubectl delete gateway agentgateway-proxy -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 kubectl delete enterpriseagentgatewayparameters agentgateway-config -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
+kubectl delete gateway ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
+kubectl delete enterpriseagentgatewayparameters ingress-agentgateway-config -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 kubectl delete enterpriseagentgatewaypolicy --all -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 kubectl delete secret openai-secret -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 helm uninstall enterprise-agentgateway -n agentgateway-system --kube-context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
