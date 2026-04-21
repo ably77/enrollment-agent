@@ -1,0 +1,48 @@
+# HTTPRoutes for the ingress gateway — hostname-based routing to user-facing services.
+# All routes reference the 'ingress' gateway in agentgateway-system.
+#
+# /etc/hosts (pointing to the ingress LoadBalancer IP):
+#   <INGRESS_LB_IP> enroll.glootest.com grafana.glootest.com ui.glootest.com
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: chatbot-ingress-route
+  namespace: wgu-demo-frontend
+spec:
+  hostnames:
+  - "enroll.glootest.com"
+  parentRefs:
+  - name: ingress
+    namespace: agentgateway-system
+  rules:
+  - backendRefs:
+    - name: enrollment-chatbot
+      port: 8501
+    matches:
+    - path:
+        type: PathPrefix
+        value: /
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana-ingress-route
+  namespace: monitoring
+spec:
+  hostnames:
+  - "grafana.glootest.com"
+  parentRefs:
+  - name: ingress
+    namespace: agentgateway-system
+  rules:
+  - backendRefs:
+    - name: grafana-prometheus
+      port: 3000
+    matches:
+    - path:
+        type: PathPrefix
+        value: /
+# NOTE: The ui-ingress-route for solo-enterprise-ui is applied dynamically
+# by install.sh because the service may be in agentgateway-system or kagent
+# depending on the field-installer profile.

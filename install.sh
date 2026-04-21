@@ -73,7 +73,16 @@ validate_demo() {
     exit 1
   fi
   kubectl cluster-info --context $KUBECONTEXT_CLUSTER1 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER1"; exit 1; }
-  echo "Cluster reachable, credentials set."
+  echo "Cluster1 reachable, credentials set."
+
+  # Check if cluster2 is reachable for multicluster failover demo
+  if kubectl cluster-info --context $KUBECONTEXT_CLUSTER2 > /dev/null 2>&1; then
+    CLUSTER2_REACHABLE=true
+    echo "Cluster2 reachable — multicluster failover demo will be configured."
+  else
+    CLUSTER2_REACHABLE=false
+    echo "Cluster2 not reachable — skipping multicluster setup (single-cluster mode)."
+  fi
 }
 
 # =============================================================================
@@ -624,7 +633,23 @@ configure_global_services() {
       annotate service $svc networking.istio.io/traffic-distribution=PreferNetwork --overwrite
   done
 
-  echo "Services labeled as global on cluster2."
+  # Patch service URLs to use mesh.internal hostnames for cross-cluster routing.
+  # svc.cluster.local is local-only DNS — mesh.internal is the global service hostname
+  # that Istio resolves across clusters.
+  echo "=== Patching service URLs for multicluster routing ==="
+  kubectl set env deploy/enrollment-chatbot -n wgu-demo-frontend \
+    DATA_PRODUCT_URL=http://data-product-api.wgu-demo.mesh.internal:8080 \
+    GRAPH_DB_URL=http://graph-db-mock.wgu-demo.mesh.internal:8081 \
+    --context $KUBECONTEXT_CLUSTER1
+
+  kubectl set env deploy/data-product-api -n wgu-demo \
+    GRAPH_DB_URL=http://graph-db-mock.wgu-demo.mesh.internal:8081 \
+    --context $KUBECONTEXT_CLUSTER1
+
+  kubectl rollout status deploy/enrollment-chatbot -n wgu-demo-frontend --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
+  kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
+
+  echo "Services labeled as global on cluster2, URLs patched for multicluster."
 }
 
 # =============================================================================
@@ -675,6 +700,10 @@ case "$INSTALL_MODE" in
     validate_demo
     check_infra
     deploy_workloads
+    if [ "$CLUSTER2_REACHABLE" = "true" ]; then
+      deploy_workloads_cluster2
+      configure_global_services
+    fi
     ;;
 esac
 

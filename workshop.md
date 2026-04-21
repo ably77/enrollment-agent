@@ -877,11 +877,7 @@ Expected: First few requests succeed (200), later requests get rate limited (429
 
 **Access the Gloo UI:**
 
-```bash
-kubectl port-forward -n agentgateway-system svc/solo-enterprise-ui 4000:80 --context $KUBECONTEXT_CLUSTER1
-```
-
-Open http://localhost:4000 — you'll see:
+Open http://ui.glootest.com — you'll see:
 - Request traces for each LLM call
 - Token counts per request
 - Guardrail evaluations (blocked/allowed)
@@ -889,14 +885,16 @@ Open http://localhost:4000 — you'll see:
 
 **Access Grafana:**
 
-```bash
-kubectl port-forward -n monitoring svc/grafana-prometheus 3000:3000 --context $KUBECONTEXT_CLUSTER1
-```
-
-Open http://localhost:3000 (admin / prom-operator):
+Open http://grafana.glootest.com (admin / prom-operator):
 - `agentgateway_gen_ai_client_token_usage` — tokens consumed
 - `agentgateway_requests_total` — request counts by status
 - `agentgateway_guardrail_checks` — guardrail evaluations
+
+> **Fallback:** If the ingress gateway is not available, use port-forward:
+> ```bash
+> kubectl port-forward -n agentgateway-system svc/solo-enterprise-ui 4000:80 --context $KUBECONTEXT_CLUSTER1
+> kubectl port-forward -n monitoring svc/grafana-prometheus 3000:3000 --context $KUBECONTEXT_CLUSTER1
+> ```
 
 > **For leadership:** Every LLM call is logged with token counts, latency, guardrail results, and the mTLS identity of the caller. This is your FERPA/PCI-DSS audit trail — one dashboard, not CloudWatch + CloudTrail + X-Ray + custom correlation.
 
@@ -1091,16 +1089,13 @@ solo-istioctl ztunnel-config workloads --context $KUBECONTEXT_CLUSTER1 | grep -E
 
 ### 5.3 Open the Enrollment Chatbot
 
-```bash
-kubectl port-forward svc/enrollment-chatbot -n wgu-demo-frontend 8501:8501 --context $KUBECONTEXT_CLUSTER1
-```
+Open http://enroll.glootest.com
 
-Open http://localhost:8501
-
-> **AWS/EKS:** If using a LoadBalancer service, get the external IP:
+> **Fallback:** If the ingress gateway is not available:
 > ```bash
-> kubectl get svc enrollment-chatbot -n wgu-demo-frontend -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' --context $KUBECONTEXT_CLUSTER1
+> kubectl port-forward svc/enrollment-chatbot -n wgu-demo-frontend 8501:8501 --context $KUBECONTEXT_CLUSTER1
 > ```
+> Open http://localhost:8501
 
 ### 5.4 Run the Demo Scenario
 

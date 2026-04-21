@@ -1,0 +1,18 @@
+# Allow the ingress gateway to reach the enrollment chatbot.
+# Required because wgu-demo-frontend has a deny-all baseline and
+# the ingress proxy is enrolled in the ambient mesh.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: ingress-to-chatbot
+  namespace: wgu-demo-frontend
+spec:
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - "*/ns/agentgateway-system/sa/ingress"
+    to:
+    - operation:
+        ports: ["8501"]

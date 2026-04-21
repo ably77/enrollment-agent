@@ -43,5 +43,5 @@ def render_sidebar():
 
         st.divider()
         st.markdown("**Observability**")
-        st.caption("Gloo UI: `kubectl port-forward -n agentgateway-system svc/solo-enterprise-ui 4000:80`")
-        st.caption("Grafana: `kubectl port-forward -n monitoring svc/grafana-prometheus 3000:3000`")
+        st.caption("Gloo UI: [ui.glootest.com](http://ui.glootest.com)")
+        st.caption("Grafana: [grafana.glootest.com](http://grafana.glootest.com)")

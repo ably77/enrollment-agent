@@ -1,0 +1,55 @@
+# Ingress gateway — exposes user-facing services (chatbot, Grafana, Gloo UI)
+# via hostname-based routing on a LoadBalancer. Enrolled in the ambient mesh
+# for mTLS on the ingress-to-service hop.
+#
+# This is separate from agentgateway-proxy (ClusterIP:8080), which handles
+# LLM routing with guardrails/rate-limits and is NOT in the mesh.
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayParameters
+metadata:
+  name: ingress-agentgateway-config
+  namespace: agentgateway-system
+spec:
+  logging:
+    level: info
+  service:
+    metadata:
+      annotations:
+        service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    spec:
+      type: LoadBalancer
+  deployment:
+    spec:
+      replicas: 2
+      template:
+        metadata:
+          labels:
+            istio.io/dataplane-mode: ambient
+        spec:
+          containers:
+          - name: agentgateway
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: ingress
+  namespace: agentgateway-system
+spec:
+  gatewayClassName: enterprise-agentgateway
+  infrastructure:
+    parametersRef:
+      group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayParameters
+      name: ingress-agentgateway-config
+  listeners:
+  - allowedRoutes:
+      namespaces:
+        from: All
+    name: http
+    port: 80
+    protocol: HTTP
