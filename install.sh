@@ -750,10 +750,20 @@ print_access_info() {
     echo "  $LB_ADDR enroll.glootest.com grafana.glootest.com ui.glootest.com"
   fi
 
+  # Detect where solo-enterprise-ui is deployed
+  local ui_pf_ns=""
+  if kubectl get svc solo-enterprise-ui -n kagent --context "$KUBECONTEXT_CLUSTER1" &>/dev/null; then
+    ui_pf_ns="kagent"
+  elif kubectl get svc solo-enterprise-ui -n agentgateway-system --context "$KUBECONTEXT_CLUSTER1" &>/dev/null; then
+    ui_pf_ns="agentgateway-system"
+  fi
+
   echo ""
   echo "Fallback (port-forward):"
   echo "  kubectl port-forward svc/enrollment-chatbot -n wgu-demo-frontend 8501:8501 --context $KUBECONTEXT_CLUSTER1"
-  echo "  kubectl port-forward -n agentgateway-system svc/solo-enterprise-ui 4000:80 --context $KUBECONTEXT_CLUSTER1"
+  if [ -n "$ui_pf_ns" ]; then
+    echo "  kubectl port-forward -n $ui_pf_ns svc/solo-enterprise-ui 4000:80 --context $KUBECONTEXT_CLUSTER1"
+  fi
   echo "  kubectl port-forward -n monitoring svc/grafana-prometheus 3000:3000 --context $KUBECONTEXT_CLUSTER1"
   echo ""
   echo "Verify mesh enrollment:"

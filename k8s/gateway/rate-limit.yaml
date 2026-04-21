@@ -12,7 +12,7 @@ spec:
     - key: generic_key
       value: wgu-enrollment
       rateLimit:
-        requestsPerUnit: 10000
+        requestsPerUnit: 100000
         unit: HOUR
     rateLimits:
     - actions:
