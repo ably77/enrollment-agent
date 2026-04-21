@@ -44,7 +44,8 @@ kubectl delete enterpriseagentgatewaypolicy --all -n agentgateway-system --conte
 kubectl delete secret openai-secret -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 helm uninstall enterprise-agentgateway -n agentgateway-system --kube-context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
 helm uninstall enterprise-agentgateway-crds -n agentgateway-system --kube-context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
-helm uninstall management -n agentgateway-system --kube-context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
+helm uninstall management -n kagent --kube-context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
+helm uninstall relay -n solo-enterprise --kube-context $KUBECONTEXT_CLUSTER2 2>/dev/null || true
 
 # --- Delete monitoring ---
 echo "--- Uninstalling monitoring ---"
@@ -69,7 +70,8 @@ done
 
 # --- Delete remaining namespaces ---
 echo "--- Deleting namespaces ---"
-kubectl delete namespace agentgateway-system monitoring --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
+kubectl delete namespace agentgateway-system kagent monitoring --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
+kubectl delete namespace solo-enterprise --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
 
 # --- Clean up temp files ---
 rm -f /tmp/wgu-root-key.pem /tmp/wgu-root-cert.pem

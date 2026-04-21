@@ -14,7 +14,8 @@ export MESH_NAME_CLUSTER1=${MESH_NAME_CLUSTER1:-cluster1}
 export MESH_NAME_CLUSTER2=${MESH_NAME_CLUSTER2:-cluster2}
 export ISTIO_VERSION=${ISTIO_VERSION:-1.29.0}
 export ENTERPRISE_AGW_VERSION=${ENTERPRISE_AGW_VERSION:-v2.3.0}
-export AGW_UI_VERSION=${AGW_UI_VERSION:-0.3.12}
+export SOLO_MGMT_UI_VERSION=${SOLO_MGMT_UI_VERSION:-0.3.15-nightly-2026-04-20-680d5f97}
+export SOLO_MGMT_UI_OCI_REPO=${SOLO_MGMT_UI_OCI_REPO:-us-docker.pkg.dev/developers-369321/solo-enterprise-public-nonprod}
 
 # --- EKS detection ---
 # Auto-detect if cluster1 is EKS by checking the server URL for ".eks.amazonaws.com"
@@ -413,22 +414,28 @@ EOF
   kubectl wait --for=condition=ready pod -l gateway.networking.k8s.io/gateway-name=agentgateway-proxy \
     -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=120s
 
-  # --- Observability: Gloo UI + Prometheus/Grafana ---
+  # --- Observability: Solo Management UI + Prometheus/Grafana ---
   echo "=== Installing observability stack ==="
 
-  # Gloo UI with OTEL collector
+  # Solo Management UI with both Mesh and AgentGateway product views
+  kubectl create namespace kagent --context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
+  kubectl label namespace kagent istio.io/dataplane-mode=ambient --context $KUBECONTEXT_CLUSTER1 --overwrite
+
   helm upgrade -i management \
-    oci://us-docker.pkg.dev/solo-public/solo-enterprise-helm/charts/management \
-    --namespace agentgateway-system --create-namespace \
-    --version "$AGW_UI_VERSION" \
-    --kube-context $KUBECONTEXT_CLUSTER1 --wait \
+    "oci://${SOLO_MGMT_UI_OCI_REPO}/charts/management" \
+    --namespace kagent --create-namespace \
+    --version "$SOLO_MGMT_UI_VERSION" \
+    --kube-context $KUBECONTEXT_CLUSTER1 --wait --no-hooks \
     -f -<<EOF
+cluster: "${KUBECONTEXT_CLUSTER1}"
+service:
+  type: ClusterIP
 products:
   agentgateway:
     enabled: true
     namespace: agentgateway-system
   mesh:
-    enabled: false
+    enabled: true
   kagent:
     enabled: false
   agentregistry:
@@ -437,11 +444,15 @@ clickhouse:
   enabled: true
 tracing:
   verbose: true
+licensing:
+  licenseKey: "${SOLO_TRIAL_LICENSE_KEY}"
 EOF
 
-  # Patch telemetry gateway to ClusterIP — its default LoadBalancer would claim port 80
-  kubectl patch svc solo-enterprise-telemetry-gateway -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 \
-    --type=merge -p '{"spec":{"type":"ClusterIP"}}' 2>/dev/null || true
+  # Label Solo Enterprise services as global for cross-cluster mesh visibility
+  kubectl label svc solo-enterprise-ui -n kagent solo.io/service-scope=global \
+    --context $KUBECONTEXT_CLUSTER1 --overwrite 2>/dev/null || true
+  kubectl label svc solo-enterprise-telemetry-gateway -n kagent solo.io/service-scope=global \
+    --context $KUBECONTEXT_CLUSTER1 --overwrite 2>/dev/null || true
 
   # Prometheus + Grafana
   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
@@ -682,7 +693,25 @@ deploy_workloads_cluster2() {
   kubectl label namespace wgu-demo istio.io/use-waypoint=wgu-demo-waypoint --context $ctx --overwrite
   kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=120s --context $ctx
 
-  echo "Backend services deployed to cluster2."
+  # --- Solo Enterprise relay for Mesh UI multi-cluster visibility ---
+  echo "=== Installing Solo Enterprise relay on cluster2 ==="
+  helm upgrade -i relay \
+    "oci://${SOLO_MGMT_UI_OCI_REPO}/charts/relay" \
+    --version "$SOLO_MGMT_UI_VERSION" \
+    --namespace solo-enterprise --create-namespace \
+    --kube-context $ctx --wait \
+    -f -<<EOF
+cluster: ${ctx}
+tunnel:
+  fqdn: solo-enterprise-ui.kagent.mesh.internal
+  port: 9000
+telemetry:
+  fqdn: solo-enterprise-telemetry-gateway.kagent.mesh.internal
+EOF
+
+  kubectl label namespace solo-enterprise istio.io/dataplane-mode=ambient --context $ctx --overwrite
+
+  echo "Backend services and relay deployed to cluster2."
 }
 
 # =============================================================================

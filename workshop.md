@@ -1,8 +1,9 @@
 # WGU Demo Workshop: Solo.io Ambient Mesh + Agent Gateway
 
 A hands-on workshop demonstrating Istio Ambient Mesh, Enterprise Agentgateway,
-unified security/governance, and an end-to-end AI enrollment chatbot scenario —
-all secured, observable, and governed through Solo's platform.
+unified security/governance, BYO ABAC external authorization, and an end-to-end
+AI enrollment chatbot scenario — all secured, observable, and governed through
+Solo's platform.
 
 **Audiences:**
 - **Platform engineers:** Step-by-step commands, real configs, verification at every step
@@ -699,21 +700,32 @@ kubectl get gateway -n agentgateway-system --context $KUBECONTEXT_CLUSTER1
 
 ### 3.2 Install Observability Stack
 
+> **Note:** The unified Solo Management UI requires a nightly build to enable both Mesh and AgentGateway product views from a single deployment. The UI is deployed to the `kagent` namespace (not `agentgateway-system`) so it can serve both product views.
+
 ```bash
-# Gloo UI with OTEL collector
-export AGW_UI_VERSION=0.3.12
+# Solo Management UI — unified Mesh + AgentGateway views
+export SOLO_MGMT_UI_VERSION=0.3.15-nightly-2026-04-20-680d5f97
+export SOLO_MGMT_UI_OCI_REPO=us-docker.pkg.dev/developers-369321/solo-enterprise-public-nonprod
+
+kubectl create namespace kagent --context $KUBECONTEXT_CLUSTER1
+kubectl label namespace kagent istio.io/dataplane-mode=ambient --context $KUBECONTEXT_CLUSTER1
+
 helm upgrade -i management \
-  oci://us-docker.pkg.dev/solo-public/solo-enterprise-helm/charts/management \
-  --namespace agentgateway-system --create-namespace \
-  --version "$AGW_UI_VERSION" \
+  "oci://${SOLO_MGMT_UI_OCI_REPO}/charts/management" \
+  --namespace kagent --create-namespace \
+  --version "$SOLO_MGMT_UI_VERSION" \
   --kube-context $KUBECONTEXT_CLUSTER1 \
+  --no-hooks \
   -f -<<EOF
+cluster: "${KUBECONTEXT_CLUSTER1}"
+service:
+  type: ClusterIP
 products:
   agentgateway:
     enabled: true
     namespace: agentgateway-system
   mesh:
-    enabled: false
+    enabled: true
   kagent:
     enabled: false
   agentregistry:
@@ -722,7 +734,15 @@ clickhouse:
   enabled: true
 tracing:
   verbose: true
+licensing:
+  licenseKey: "${SOLO_TRIAL_LICENSE_KEY}"
 EOF
+
+# Label services as global for cross-cluster mesh visibility
+kubectl label svc solo-enterprise-ui -n kagent solo.io/service-scope=global \
+  --context $KUBECONTEXT_CLUSTER1 --overwrite
+kubectl label svc solo-enterprise-telemetry-gateway -n kagent solo.io/service-scope=global \
+  --context $KUBECONTEXT_CLUSTER1 --overwrite
 
 # Prometheus + Grafana
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -772,6 +792,29 @@ spec:
       app.kubernetes.io/name: agentgateway-proxy
 EOF
 ```
+
+**Install Solo Enterprise relay on cluster 2** (for Mesh UI multi-cluster visibility):
+
+```bash
+helm upgrade -i relay \
+  "oci://${SOLO_MGMT_UI_OCI_REPO}/charts/relay" \
+  --version "$SOLO_MGMT_UI_VERSION" \
+  --namespace solo-enterprise --create-namespace \
+  --kube-context $KUBECONTEXT_CLUSTER2 \
+  -f -<<EOF
+cluster: ${KUBECONTEXT_CLUSTER2}
+tunnel:
+  fqdn: solo-enterprise-ui.kagent.mesh.internal
+  port: 9000
+telemetry:
+  fqdn: solo-enterprise-telemetry-gateway.kagent.mesh.internal
+EOF
+
+kubectl label namespace solo-enterprise istio.io/dataplane-mode=ambient \
+  --context $KUBECONTEXT_CLUSTER2 --overwrite
+```
+
+> The relay connects cluster2 back to the management plane via the mesh. The `mesh.internal` FQDNs are auto-allocated by Istio (via `PILOT_ENABLE_IP_AUTOALLOCATE`) and the global service labels ensure cross-cluster discovery.
 
 ### 3.3 Configure LLM Backend
 
@@ -916,7 +959,7 @@ Open http://grafana.glootest.com (admin / prom-operator):
 
 > **Fallback:** If the ingress gateway is not available, use port-forward:
 > ```bash
-> kubectl port-forward -n agentgateway-system svc/solo-enterprise-ui 4000:80 --context $KUBECONTEXT_CLUSTER1
+> kubectl port-forward -n kagent svc/solo-enterprise-ui 4000:80 --context $KUBECONTEXT_CLUSTER1
 > kubectl port-forward -n monitoring svc/grafana-prometheus 3000:3000 --context $KUBECONTEXT_CLUSTER1
 > ```
 
@@ -1077,11 +1120,266 @@ kubectl logs -n agentgateway-system -l app.kubernetes.io/name=agentgateway-proxy
 
 ---
 
-## Section 5: The Home Run — End-to-End Enrollment Scenario
+## Section 5: BYO ABAC External Authorization (ext-authz)
+
+> **For leadership:** This section demonstrates how the agent gateway supports Bring-Your-Own external authorization. Instead of relying solely on identity-based access control (who are you?), ABAC evaluates multiple attributes simultaneously — agent role, service tier, and requested model — to make fine-grained authorization decisions. This lets you express policies like "standard-tier agents can use gpt-4o-mini but not gpt-4o" without coupling the policy to any single identity.
+
+### 5.1 Overview
+
+Identity-based authorization asks *who are you?* — it grants access based on a verified identity (a certificate, a JWT claim, a Kubernetes ServiceAccount). That is what Istio AuthorizationPolicy does at the mesh layer.
+
+Attribute-Based Access Control (ABAC) asks *what are you allowed to do, given the combination of attributes you carry?* The ABAC ext-authz server evaluates three headers on each request:
+
+| Header | Description | Example values |
+|---|---|---|
+| `x-agent-role` | The role of the calling agent | `enrollment-advisor`, `analytics-agent` |
+| `x-agent-tier` | The service tier of the agent | `standard`, `premium` |
+| `x-agent-model` | The LLM model being requested | `gpt-4o-mini`, `gpt-4o` |
+
+**Policy matrix:**
+
+| Role | Tier | gpt-4o-mini | gpt-4o |
+|---|---|---|---|
+| enrollment-advisor | standard | allowed | denied |
+| analytics-agent | premium | allowed | allowed |
+| unauthorized-agent | any | denied | denied |
+
+**Request flow with ABAC:**
+
+```
+Client / Demo UI
+  → Agentgateway Proxy
+      → gRPC Check(x-agent-role, x-agent-tier, x-agent-model)
+          → ABAC ext-authz server
+              → DENIED (403)  ← if policy check fails
+              → ALLOWED       ← if policy check passes
+                  → Backend LLM (OpenAI via wgu-enrollment route)
+```
+
+### 5.2 Deploy the ABAC ext-authz Server
+
+The `ABAC_POLICIES` environment variable defines the policy matrix in the format `role:tier=model1|model2` with entries separated by commas.
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: agentgateway-system
+  name: abac-ext-authz
+  labels:
+    app: abac-ext-authz
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: abac-ext-authz
+  template:
+    metadata:
+      labels:
+        app: abac-ext-authz
+        app.kubernetes.io/name: abac-ext-authz
+    spec:
+      containers:
+      - image: ably7/abac-ext-authz:latest
+        name: abac-ext-authz
+        ports:
+        - containerPort: 9000
+        env:
+        - name: PORT
+          value: "9000"
+        - name: ABAC_POLICIES
+          value: "enrollment-advisor:standard=gpt-4o-mini,analytics-agent:premium=gpt-4o|gpt-4o-mini"
+EOF
+
+kubectl rollout status deployment/abac-ext-authz -n agentgateway-system --timeout=60s --context $KUBECONTEXT_CLUSTER1
+```
+
+Create the Service. The `appProtocol: kubernetes.io/h2c` tells the gateway this backend speaks gRPC (HTTP/2 cleartext).
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: agentgateway-system
+  name: abac-ext-authz
+  labels:
+    app: abac-ext-authz
+spec:
+  ports:
+  - port: 4444
+    targetPort: 9000
+    protocol: TCP
+    appProtocol: kubernetes.io/h2c
+  selector:
+    app: abac-ext-authz
+EOF
+```
+
+### 5.3 Verify the Route Works Without ABAC
+
+Confirm the `wgu-enrollment` route is healthy before locking it down:
+
+```bash
+curl -i "$GATEWAY_IP:8080/openai" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Say hello in one sentence."
+      }
+    ]
+  }'
+```
+
+Expected: 200 response with a completion from OpenAI.
+
+### 5.4 Apply the ABAC ext-authz Policy
+
+Target the HTTPRoute so only traffic to the enrollment route requires ABAC — other routes are unaffected.
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  namespace: agentgateway-system
+  name: abac-ext-auth-policy
+  labels:
+    app: abac-ext-authz
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: wgu-enrollment
+  traffic:
+    extAuth:
+      backendRef:
+        name: abac-ext-authz
+        namespace: agentgateway-system
+        port: 4444
+      grpc: {}
+EOF
+```
+
+### 5.5 Test ABAC Enforcement
+
+**Test 1: No agent identity → denied**
+
+```bash
+curl -i "$GATEWAY_IP:8080/openai" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}]
+  }'
+```
+
+Expected: `403 Forbidden` — `denied by ABAC: missing required header: x-agent-role`
+
+**Test 2: enrollment-advisor + gpt-4o-mini → allowed**
+
+```bash
+curl -i "$GATEWAY_IP:8080/openai" \
+  -H "content-type: application/json" \
+  -H "x-agent-role: enrollment-advisor" \
+  -H "x-agent-tier: standard" \
+  -H "x-agent-model: gpt-4o-mini" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}]
+  }'
+```
+
+Expected: `200` with a completion. Response includes `x-abac-decision: allowed` header.
+
+**Test 3: enrollment-advisor + gpt-4o → denied**
+
+```bash
+curl -i "$GATEWAY_IP:8080/openai" \
+  -H "content-type: application/json" \
+  -H "x-agent-role: enrollment-advisor" \
+  -H "x-agent-tier: standard" \
+  -H "x-agent-model: gpt-4o" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}]
+  }'
+```
+
+Expected: `403 Forbidden` — `denied by ABAC: agent "enrollment-advisor" (standard) not authorized for model "gpt-4o" (allowed: gpt-4o-mini)`
+
+**Test 4: analytics-agent + gpt-4o → allowed**
+
+```bash
+curl -i "$GATEWAY_IP:8080/openai" \
+  -H "content-type: application/json" \
+  -H "x-agent-role: analytics-agent" \
+  -H "x-agent-tier: premium" \
+  -H "x-agent-model: gpt-4o" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}]
+  }'
+```
+
+Expected: `200` with a completion.
+
+**Test 5: unauthorized-agent → denied**
+
+```bash
+curl -i "$GATEWAY_IP:8080/openai" \
+  -H "content-type: application/json" \
+  -H "x-agent-role: unauthorized-agent" \
+  -H "x-agent-tier: standard" \
+  -H "x-agent-model: gpt-4o-mini" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Say hello in one sentence."}]
+  }'
+```
+
+Expected: `403 Forbidden` — `denied by ABAC: no ABAC policy for agent "unauthorized-agent" (standard)`
+
+### 5.6 View ext-authz Logs
+
+```bash
+kubectl logs -n agentgateway-system -l app=abac-ext-authz --tail=20 --context $KUBECONTEXT_CLUSTER1
+```
+
+Each log line shows the HTTP method, path, ABAC header values, and the ALLOWED/DENIED decision:
+
+```
+[abac-ext-authz] POST /openai | role=enrollment-advisor tier=standard model=gpt-4o-mini
+[abac-ext-authz] ALLOWED: agent "enrollment-advisor" (standard) authorized for model gpt-4o-mini
+[abac-ext-authz] POST /openai | role=enrollment-advisor tier=standard model=gpt-4o
+[abac-ext-authz] DENIED: agent "enrollment-advisor" (standard) not authorized for model "gpt-4o" (allowed: gpt-4o-mini)
+```
+
+### 5.7 ABAC Cleanup
+
+Remove the ABAC resources when done with this section:
+
+```bash
+kubectl delete enterpriseagentgatewaypolicy -n agentgateway-system abac-ext-auth-policy --context $KUBECONTEXT_CLUSTER1
+kubectl delete deployment -n agentgateway-system abac-ext-authz --context $KUBECONTEXT_CLUSTER1
+kubectl delete service -n agentgateway-system abac-ext-authz --context $KUBECONTEXT_CLUSTER1
+```
+
+The `wgu-enrollment` route continues to work without ABAC once the policy is removed.
+
+> **For leadership:** This demonstrates extensibility — the agent gateway's ext-authz integration lets you bring your own authorization logic (ABAC, OPA, custom policy engines) without modifying the gateway itself. The same pattern works for any custom governance requirement: compliance checks, budget validation, approval workflows.
+
+---
+
+## Section 6: The Home Run — End-to-End Enrollment Scenario
 
 > **For leadership:** This is the demo. A student asks an AI enrollment advisor about their courses. The request flows through the agent gateway (guardrails, token counting), to an LLM (function calling), to a data product API (through the mesh, mTLS verified), to a graph database. The entire chain is secured, observable, and governed — with zero custom security code.
 
-### 5.1 Deploy the Enrollment Chatbot
+### 6.1 Deploy the Enrollment Chatbot
 
 ```bash
 # Deploy the chatbot UI
@@ -1104,14 +1402,14 @@ kubectl get pods -n agentgateway-system -l app.kubernetes.io/name=agentgateway-p
 
 Expected: All pods `1/1 Running`.
 
-### 5.2 Verify Mesh Enrollment
+### 6.2 Verify Mesh Enrollment
 
 ```bash
 # All WGU services should show HBONE (mTLS active)
 solo-istioctl ztunnel-config workloads --context $KUBECONTEXT_CLUSTER1 | grep -E "wgu-demo|agentgateway"
 ```
 
-### 5.3 Open the Enrollment Chatbot
+### 6.3 Open the Enrollment Chatbot
 
 **Get the ingress address and configure `/etc/hosts`:**
 
@@ -1143,7 +1441,7 @@ Open http://enroll.glootest.com
 > ```
 > Open http://localhost:8501
 
-### 5.4 Run the Demo Scenario
+### 6.4 Run the Demo Scenario
 
 **Step 1: Ask about enrollment progress**
 
@@ -1172,7 +1470,24 @@ Expected: The chatbot references GPA (3.42), competency units earned (89), and r
 
 Expected: The request is **blocked** by the agent gateway guardrail. The chat shows a 422 error — PII detected. The SSN never reaches the LLM provider.
 
-### 5.5 Observe the Full Chain
+### 6.5 Demo UI — ABAC Simulation
+
+The enrollment chatbot has an ABAC simulation toggle in the sidebar. If the ABAC ext-authz server from Section 5 is still deployed, you can walk through all four scenarios interactively:
+
+1. In the left sidebar, locate the **Agent Identity (ABAC)** section
+2. Check **Enable ABAC Simulation** — three dropdowns appear:
+   - **Agent Role**: `enrollment-advisor`, `analytics-agent`, or `unauthorized-agent`
+   - **Agent Tier**: `standard` or `premium`
+   - **LLM Model**: `gpt-4o-mini` or `gpt-4o`
+
+| Scenario | Role | Tier | Model | Expected |
+|---|---|---|---|---|
+| No ABAC headers (toggle off) | — | — | gpt-4o-mini | 403 — missing x-agent-role |
+| Authorized combination | enrollment-advisor | standard | gpt-4o-mini | 200 — chatbot responds |
+| Unauthorized model | enrollment-advisor | standard | gpt-4o | 403 — model not authorized |
+| Premium tier | analytics-agent | premium | gpt-4o | 200 — chatbot responds |
+
+### 6.6 Observe the Full Chain
 
 **Gloo UI (traces):**
 
@@ -1198,14 +1513,14 @@ kubectl logs -n agentgateway-system -l app.kubernetes.io/name=agentgateway-proxy
   --context $KUBECONTEXT_CLUSTER1 --tail=10
 ```
 
-### 5.6 The Complete Picture
+### 6.7 The Complete Picture
 
 At this point, a single student chat message has been:
 
 | Hop | Service | Security | Observability |
 |-----|---------|----------|---------------|
 | 1 | Enrollment Chatbot | Mesh mTLS identity | ztunnel connection log |
-| 2 | Agent Gateway | Guardrails (PII, injection), rate limits | Token count, latency, guardrail result |
+| 2 | Agent Gateway | Guardrails (PII, injection), rate limits, ABAC ext-authz | Token count, latency, guardrail result |
 | 3 | LLM Provider | API key masking via gateway | Model, tokens, prompt/completion |
 | 4 | Data Product API | Mesh AuthorizationPolicy (only chatbot allowed) | Waypoint access log |
 | 5 | Graph DB Mock | Mesh AuthorizationPolicy (only data-product-api allowed) | Waypoint access log |
@@ -1216,7 +1531,7 @@ Every hop has cryptographic identity verification. Every hop is logged. Every ho
 
 ---
 
-## Section 6: Without Solo — The AWS-Native Alternative
+## Section 7: Without Solo — The AWS-Native Alternative
 
 > **For leadership:** This section describes what building the same enrollment chatbot scenario would require using only native AWS services. Nothing here is built — this is a reference for the "why not just use AWS?" conversation.
 
@@ -1320,7 +1635,8 @@ kubectl delete -f k8s/namespaces.yaml --context $KUBECONTEXT_CLUSTER1
 # Uninstall agent gateway
 helm uninstall enterprise-agentgateway -n agentgateway-system --kube-context $KUBECONTEXT_CLUSTER1
 helm uninstall enterprise-agentgateway-crds -n agentgateway-system --kube-context $KUBECONTEXT_CLUSTER1
-helm uninstall management -n agentgateway-system --kube-context $KUBECONTEXT_CLUSTER1
+helm uninstall management -n kagent --kube-context $KUBECONTEXT_CLUSTER1
+helm uninstall relay -n solo-enterprise --kube-context $KUBECONTEXT_CLUSTER2
 
 # Uninstall monitoring
 helm uninstall grafana-prometheus -n monitoring --kube-context $KUBECONTEXT_CLUSTER1
@@ -1335,7 +1651,8 @@ for CTX in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
 done
 
 # Delete namespaces
-kubectl delete namespace agentgateway-system monitoring --context $KUBECONTEXT_CLUSTER1
+kubectl delete namespace agentgateway-system kagent monitoring --context $KUBECONTEXT_CLUSTER1
+kubectl delete namespace solo-enterprise --context $KUBECONTEXT_CLUSTER2
 
 # Stop Colima clusters (local only — skip if using pre-existing clusters)
 colima stop --profile cluster1
