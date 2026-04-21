@@ -16,62 +16,166 @@ export ISTIO_VERSION=${ISTIO_VERSION:-1.29.0}
 export ENTERPRISE_AGW_VERSION=${ENTERPRISE_AGW_VERSION:-v2.3.0}
 export AGW_UI_VERSION=${AGW_UI_VERSION:-0.3.12}
 
-# --- Validation ---
-echo "=== Validating prerequisites ==="
-for var in SOLO_TRIAL_LICENSE_KEY OPENAI_API_KEY; do
-  if [ -z "${!var}" ]; then
-    echo "ERROR: $var is not set"
+# =============================================================================
+# prompt_mode — Interactive menu, returns "full" or "demo". Default=1 on empty Enter.
+# =============================================================================
+prompt_mode() {
+  echo "" >&2
+  echo "Select install mode:" >&2
+  echo "  1) full      — Install everything end-to-end (Istio, AgentGateway, workloads)" >&2
+  echo "  2) demo-only — Deploy enrollment-agent workloads onto existing infrastructure" >&2
+  echo "" >&2
+  while true; do
+    printf "Enter selection [1]: " >&2
+    read -r selection
+    # Default to 1 on empty Enter
+    selection="${selection:-1}"
+    case "$selection" in
+      1|full)
+        echo "full"
+        return
+        ;;
+      2|demo|demo-only)
+        echo "demo"
+        return
+        ;;
+      *)
+        echo "Invalid selection: '$selection'. Please enter 1 or 2." >&2
+        ;;
+    esac
+  done
+}
+
+# =============================================================================
+# validate_full — Check both clusters reachable, SOLO_TRIAL_LICENSE_KEY and OPENAI_API_KEY set.
+# =============================================================================
+validate_full() {
+  echo "=== Validating prerequisites ==="
+  for var in SOLO_TRIAL_LICENSE_KEY OPENAI_API_KEY; do
+    if [ -z "${!var}" ]; then
+      echo "ERROR: $var is not set"
+      exit 1
+    fi
+  done
+  kubectl cluster-info --context $KUBECONTEXT_CLUSTER1 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER1"; exit 1; }
+  kubectl cluster-info --context $KUBECONTEXT_CLUSTER2 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER2"; exit 1; }
+  echo "Clusters reachable, credentials set."
+}
+
+# =============================================================================
+# validate_demo — Check only cluster1 reachable and OPENAI_API_KEY set.
+# No SOLO_TRIAL_LICENSE_KEY or cluster2 needed.
+# =============================================================================
+validate_demo() {
+  echo "=== Validating prerequisites (demo-only mode) ==="
+  if [ -z "${OPENAI_API_KEY}" ]; then
+    echo "ERROR: OPENAI_API_KEY is not set"
     exit 1
   fi
-done
-kubectl cluster-info --context $KUBECONTEXT_CLUSTER1 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER1"; exit 1; }
-kubectl cluster-info --context $KUBECONTEXT_CLUSTER2 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER2"; exit 1; }
-echo "Clusters reachable, credentials set."
+  kubectl cluster-info --context $KUBECONTEXT_CLUSTER1 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER1"; exit 1; }
+  echo "Cluster reachable, credentials set."
+}
 
-# --- solo-istioctl ---
-if ! command -v solo-istioctl &> /dev/null; then
-  echo "=== Installing solo-istioctl ==="
-  OS=$(uname | tr '[:upper:]' '[:lower:]' | sed -E 's/darwin/osx/')
-  ARCH=$(uname -m | sed -E 's/aarch/arm/; s/x86_64/amd64/; s/armv7l/armv7/')
-  curl -sSL "https://storage.googleapis.com/soloio-istio-binaries/release/${ISTIO_VERSION}-solo/istioctl-${ISTIO_VERSION}-solo-${OS}-${ARCH}.tar.gz" | tar xzf - -C /tmp/
-  sudo mv /tmp/istioctl /usr/local/bin/solo-istioctl
-  chmod +x /usr/local/bin/solo-istioctl
-fi
+# =============================================================================
+# check_infra — Demo-only prerequisite checks.
+# Collects all failures and reports them all at once, then exits if any failed.
+# =============================================================================
+check_infra() {
+  echo "=== Checking existing infrastructure ==="
+  local failures=()
 
-# --- Shared root CA ---
-echo "=== Generating shared root CA ==="
-openssl req -new -newkey rsa:4096 -x509 -sha256 \
-  -days 3650 -nodes -subj "/O=Solo.io/CN=Root CA" \
-  -keyout /tmp/wgu-root-key.pem -out /tmp/wgu-root-cert.pem 2>/dev/null
+  # Istio control plane: istiod Running pods
+  if ! kubectl get pods -n istio-system -l app=istiod --context $KUBECONTEXT_CLUSTER1 \
+      --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -q .; then
+    failures+=("Istio control plane (istiod) not found or not Running in istio-system")
+  fi
 
-# --- Install Istio on both clusters ---
-install_istio() {
-  local CTX=$1 MESH_NAME=$2
-  echo "=== Installing Istio ambient mesh on $CTX ==="
+  # ztunnel: Running pods
+  if ! kubectl get pods -n istio-system -l app=ztunnel --context $KUBECONTEXT_CLUSTER1 \
+      --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -q .; then
+    failures+=("ztunnel not found or not Running in istio-system")
+  fi
 
-  kubectl create namespace istio-system --context $CTX 2>/dev/null || true
-  kubectl create secret generic cacerts -n istio-system \
-    --from-file=ca-cert.pem=/tmp/wgu-root-cert.pem \
-    --from-file=ca-key.pem=/tmp/wgu-root-key.pem \
-    --from-file=root-cert.pem=/tmp/wgu-root-cert.pem \
-    --from-file=cert-chain.pem=/tmp/wgu-root-cert.pem \
-    --context $CTX 2>/dev/null || true
+  # AgentGateway controller: Running pods
+  if ! kubectl get pods -n agentgateway-system \
+      -l app.kubernetes.io/name=enterprise-agentgateway --context $KUBECONTEXT_CLUSTER1 \
+      --field-selector=status.phase=Running --no-headers 2>/dev/null | grep -q .; then
+    failures+=("AgentGateway controller not found or not Running in agentgateway-system")
+  fi
 
-  helm upgrade --kube-context $CTX --install istio-base \
-    oci://us-docker.pkg.dev/soloio-img/istio-helm/base \
-    -n istio-system --version $ISTIO_VERSION-solo --create-namespace --wait
+  # AgentGateway proxy Gateway resource exists
+  if ! kubectl get gateway agentgateway-proxy -n agentgateway-system \
+      --context $KUBECONTEXT_CLUSTER1 > /dev/null 2>&1; then
+    failures+=("Gateway 'agentgateway-proxy' not found in agentgateway-system")
+  fi
 
-  kubectl label namespace istio-system topology.istio.io/network=$MESH_NAME --context $CTX --overwrite
+  # Monitoring namespace exists
+  if ! kubectl get ns monitoring --context $KUBECONTEXT_CLUSTER1 > /dev/null 2>&1; then
+    failures+=("Namespace 'monitoring' not found")
+  fi
 
-  # Gateway API CRDs (experimental for TLSRoute support, server-side apply for large CRDs)
-  kubectl get crd gateways.gateway.networking.k8s.io --context $CTX &> /dev/null || \
-    kubectl --context $CTX apply --server-side -f \
-      https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
+  if [ ${#failures[@]} -gt 0 ]; then
+    echo ""
+    echo "ERROR: Infrastructure prerequisites not met:"
+    for f in "${failures[@]}"; do
+      echo "  - $f"
+    done
+    echo ""
+    echo "Run in 'full' mode to install all infrastructure first."
+    exit 1
+  fi
 
-  helm upgrade --kube-context $CTX --install istio-cni \
-    oci://us-docker.pkg.dev/soloio-img/istio-helm/cni \
-    -n istio-system --version=$ISTIO_VERSION-solo --wait \
-    -f -<<EOF
+  echo "Infrastructure checks passed."
+}
+
+# =============================================================================
+# install_infra — All infrastructure-only code.
+# =============================================================================
+install_infra() {
+  # --- solo-istioctl ---
+  if ! command -v solo-istioctl &> /dev/null; then
+    echo "=== Installing solo-istioctl ==="
+    OS=$(uname | tr '[:upper:]' '[:lower:]' | sed -E 's/darwin/osx/')
+    ARCH=$(uname -m | sed -E 's/aarch/arm/; s/x86_64/amd64/; s/armv7l/armv7/')
+    curl -sSL "https://storage.googleapis.com/soloio-istio-binaries/release/${ISTIO_VERSION}-solo/istioctl-${ISTIO_VERSION}-solo-${OS}-${ARCH}.tar.gz" | tar xzf - -C /tmp/
+    sudo mv /tmp/istioctl /usr/local/bin/solo-istioctl
+    chmod +x /usr/local/bin/solo-istioctl
+  fi
+
+  # --- Shared root CA ---
+  echo "=== Generating shared root CA ==="
+  openssl req -new -newkey rsa:4096 -x509 -sha256 \
+    -days 3650 -nodes -subj "/O=Solo.io/CN=Root CA" \
+    -keyout /tmp/wgu-root-key.pem -out /tmp/wgu-root-cert.pem 2>/dev/null
+
+  # --- Install Istio on both clusters ---
+  install_istio() {
+    local CTX=$1 MESH_NAME=$2
+    echo "=== Installing Istio ambient mesh on $CTX ==="
+
+    kubectl create namespace istio-system --context $CTX 2>/dev/null || true
+    kubectl create secret generic cacerts -n istio-system \
+      --from-file=ca-cert.pem=/tmp/wgu-root-cert.pem \
+      --from-file=ca-key.pem=/tmp/wgu-root-key.pem \
+      --from-file=root-cert.pem=/tmp/wgu-root-cert.pem \
+      --from-file=cert-chain.pem=/tmp/wgu-root-cert.pem \
+      --context $CTX 2>/dev/null || true
+
+    helm upgrade --kube-context $CTX --install istio-base \
+      oci://us-docker.pkg.dev/soloio-img/istio-helm/base \
+      -n istio-system --version $ISTIO_VERSION-solo --create-namespace --wait
+
+    kubectl label namespace istio-system topology.istio.io/network=$MESH_NAME --context $CTX --overwrite
+
+    # Gateway API CRDs (experimental for TLSRoute support, server-side apply for large CRDs)
+    kubectl get crd gateways.gateway.networking.k8s.io --context $CTX &> /dev/null || \
+      kubectl --context $CTX apply --server-side -f \
+        https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
+
+    helm upgrade --kube-context $CTX --install istio-cni \
+      oci://us-docker.pkg.dev/soloio-img/istio-helm/cni \
+      -n istio-system --version=$ISTIO_VERSION-solo --wait \
+      -f -<<EOF
 profile: ambient
 ambient:
   dnsCapture: true
@@ -84,10 +188,10 @@ global:
   variant: distroless
 EOF
 
-  helm upgrade --kube-context $CTX --install istiod \
-    oci://us-docker.pkg.dev/soloio-img/istio-helm/istiod \
-    -n istio-system --version=$ISTIO_VERSION-solo --wait \
-    -f -<<EOF
+    helm upgrade --kube-context $CTX --install istiod \
+      oci://us-docker.pkg.dev/soloio-img/istio-helm/istiod \
+      -n istio-system --version=$ISTIO_VERSION-solo --wait \
+      -f -<<EOF
 profile: ambient
 global:
   hub: us-docker.pkg.dev/soloio-img/istio
@@ -109,10 +213,10 @@ license:
   value: $SOLO_TRIAL_LICENSE_KEY
 EOF
 
-  helm upgrade --kube-context $CTX --install ztunnel \
-    oci://us-docker.pkg.dev/soloio-img/istio-helm/ztunnel \
-    -n istio-system --version=$ISTIO_VERSION-solo --wait \
-    -f -<<EOF
+    helm upgrade --kube-context $CTX --install ztunnel \
+      oci://us-docker.pkg.dev/soloio-img/istio-helm/ztunnel \
+      -n istio-system --version=$ISTIO_VERSION-solo --wait \
+      -f -<<EOF
 profile: ambient
 logLevel: info
 global:
@@ -132,57 +236,43 @@ multiCluster:
   clusterName: $MESH_NAME
 EOF
 
-  echo "Istio ambient mesh installed on $CTX"
-}
+    echo "Istio ambient mesh installed on $CTX"
+  }
 
-install_istio $KUBECONTEXT_CLUSTER1 $MESH_NAME_CLUSTER1
-install_istio $KUBECONTEXT_CLUSTER2 $MESH_NAME_CLUSTER2
+  install_istio $KUBECONTEXT_CLUSTER1 $MESH_NAME_CLUSTER1
+  install_istio $KUBECONTEXT_CLUSTER2 $MESH_NAME_CLUSTER2
 
-# --- Multi-cluster linking ---
-echo "=== Linking clusters ==="
-kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
-kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER2 2>/dev/null || true
-solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER1
-solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER2
-kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
-kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER2
-solo-istioctl multicluster link --contexts=$KUBECONTEXT_CLUSTER1,$KUBECONTEXT_CLUSTER2 --namespace istio-gateways
+  # --- Multi-cluster linking ---
+  echo "=== Linking clusters ==="
+  kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
+  kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER2 2>/dev/null || true
+  solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER1
+  solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER2
+  kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
+  kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER2
+  solo-istioctl multicluster link --contexts=$KUBECONTEXT_CLUSTER1,$KUBECONTEXT_CLUSTER2 --namespace istio-gateways
 
-# --- Deploy WGU workloads ---
-echo "=== Deploying WGU demo workloads ==="
-kubectl apply -f k8s/namespaces.yaml --context $KUBECONTEXT_CLUSTER1
-kubectl apply -f k8s/services/graph-db-mock.yaml --context $KUBECONTEXT_CLUSTER1
-kubectl apply -f k8s/services/data-product-api.yaml --context $KUBECONTEXT_CLUSTER1
-kubectl rollout status deploy/graph-db-mock -n wgu-demo --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
-kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
+  # --- Enterprise Agentgateway ---
+  echo "=== Installing Enterprise Agentgateway ==="
 
-# --- Mesh policies and waypoint ---
-echo "=== Applying mesh policies ==="
-kubectl apply -f k8s/mesh/ --context $KUBECONTEXT_CLUSTER1
-kubectl label namespace wgu-demo istio.io/use-waypoint=wgu-demo-waypoint --context $KUBECONTEXT_CLUSTER1 --overwrite
-kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
+  # Upgrade to experimental Gateway API CRDs v1.5.0
+  kubectl delete validatingadmissionpolicybinding safe-upgrades.gateway.networking.k8s.io --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null
+  kubectl delete validatingadmissionpolicy safe-upgrades.gateway.networking.k8s.io --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null
+  kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/experimental-install.yaml --context $KUBECONTEXT_CLUSTER1
 
-# --- Enterprise Agentgateway ---
-echo "=== Installing Enterprise Agentgateway ==="
+  kubectl create namespace agentgateway-system --context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
 
-# Upgrade to experimental Gateway API CRDs v1.5.0
-kubectl delete validatingadmissionpolicybinding safe-upgrades.gateway.networking.k8s.io --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null
-kubectl delete validatingadmissionpolicy safe-upgrades.gateway.networking.k8s.io --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null
-kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/experimental-install.yaml --context $KUBECONTEXT_CLUSTER1
+  helm upgrade -i --create-namespace --namespace agentgateway-system \
+    --version $ENTERPRISE_AGW_VERSION enterprise-agentgateway-crds \
+    oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway-crds \
+    --kube-context $KUBECONTEXT_CLUSTER1
 
-kubectl create namespace agentgateway-system --context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
-
-helm upgrade -i --create-namespace --namespace agentgateway-system \
-  --version $ENTERPRISE_AGW_VERSION enterprise-agentgateway-crds \
-  oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway-crds \
-  --kube-context $KUBECONTEXT_CLUSTER1
-
-helm upgrade -i -n agentgateway-system enterprise-agentgateway \
-  oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway \
-  --create-namespace --version $ENTERPRISE_AGW_VERSION \
-  --set-string licensing.licenseKey=$SOLO_TRIAL_LICENSE_KEY \
-  --kube-context $KUBECONTEXT_CLUSTER1 --wait \
-  -f -<<EOF
+  helm upgrade -i -n agentgateway-system enterprise-agentgateway \
+    oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway \
+    --create-namespace --version $ENTERPRISE_AGW_VERSION \
+    --set-string licensing.licenseKey=$SOLO_TRIAL_LICENSE_KEY \
+    --kube-context $KUBECONTEXT_CLUSTER1 --wait \
+    -f -<<EOF
 gatewayClassParametersRefs:
   enterprise-agentgateway:
     group: enterpriseagentgateway.solo.io
@@ -191,8 +281,8 @@ gatewayClassParametersRefs:
     namespace: agentgateway-system
 EOF
 
-# Deploy gateway config
-kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
+  # Deploy gateway config
+  kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayParameters
 metadata:
@@ -240,26 +330,26 @@ spec:
           from: All
 EOF
 
-echo "Waiting for agentgateway controller..."
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=enterprise-agentgateway \
-  -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=180s
+  echo "Waiting for agentgateway controller..."
+  kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=enterprise-agentgateway \
+    -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=180s
 
-echo "Waiting for agentgateway proxy..."
-kubectl wait --for=condition=programmed gateway agentgateway-proxy \
-  -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=120s
-kubectl wait --for=condition=ready pod -l gateway.networking.k8s.io/gateway-name=agentgateway-proxy \
-  -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=120s
+  echo "Waiting for agentgateway proxy..."
+  kubectl wait --for=condition=programmed gateway agentgateway-proxy \
+    -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=120s
+  kubectl wait --for=condition=ready pod -l gateway.networking.k8s.io/gateway-name=agentgateway-proxy \
+    -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=120s
 
-# --- Observability: Gloo UI + Prometheus/Grafana ---
-echo "=== Installing observability stack ==="
+  # --- Observability: Gloo UI + Prometheus/Grafana ---
+  echo "=== Installing observability stack ==="
 
-# Gloo UI with OTEL collector
-helm upgrade -i management \
-  oci://us-docker.pkg.dev/solo-public/solo-enterprise-helm/charts/management \
-  --namespace agentgateway-system --create-namespace \
-  --version "$AGW_UI_VERSION" \
-  --kube-context $KUBECONTEXT_CLUSTER1 --wait \
-  -f -<<EOF
+  # Gloo UI with OTEL collector
+  helm upgrade -i management \
+    oci://us-docker.pkg.dev/solo-public/solo-enterprise-helm/charts/management \
+    --namespace agentgateway-system --create-namespace \
+    --version "$AGW_UI_VERSION" \
+    --kube-context $KUBECONTEXT_CLUSTER1 --wait \
+    -f -<<EOF
 products:
   agentgateway:
     enabled: true
@@ -276,14 +366,18 @@ tracing:
   verbose: true
 EOF
 
-# Prometheus + Grafana
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
-helm repo update prometheus-community
-helm upgrade --install grafana-prometheus \
-  prometheus-community/kube-prometheus-stack \
-  --version 80.4.2 --namespace monitoring --create-namespace \
-  --kube-context $KUBECONTEXT_CLUSTER1 --wait \
-  --values -<<EOF
+  # Patch telemetry gateway to ClusterIP — its default LoadBalancer would claim port 80
+  kubectl patch svc solo-enterprise-telemetry-gateway -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 \
+    --type=merge -p '{"spec":{"type":"ClusterIP"}}' 2>/dev/null || true
+
+  # Prometheus + Grafana
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+  helm repo update prometheus-community
+  helm upgrade --install grafana-prometheus \
+    prometheus-community/kube-prometheus-stack \
+    --version 80.4.2 --namespace monitoring --create-namespace \
+    --kube-context $KUBECONTEXT_CLUSTER1 --wait \
+    --values -<<EOF
 alertmanager:
   enabled: false
 grafana:
@@ -306,8 +400,8 @@ prometheus:
     podMonitorSelectorNilUsesHelmValues: false
 EOF
 
-# PodMonitor for gateway metrics
-kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
+  # PodMonitor for gateway metrics
+  kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
@@ -324,8 +418,8 @@ spec:
       app.kubernetes.io/name: agentgateway-proxy
 EOF
 
-# Access logging
-kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
+  # Access logging
+  kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayPolicy
 metadata:
@@ -348,8 +442,8 @@ spec:
           expression: llm.streaming
 EOF
 
-# Tracing — send traces to OTEL collector for Gloo UI
-kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
+  # Tracing — send traces to OTEL collector for Gloo UI
+  kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayPolicy
 metadata:
@@ -376,57 +470,212 @@ spec:
           expression: json(response.body)
 EOF
 
-# Import Agentgateway Grafana dashboard
-DASHBOARD_JSON="${SCRIPT_DIR}/k8s/observability/agentgateway-grafana-dashboard-v1.json"
-if [ -f "$DASHBOARD_JSON" ]; then
-  kubectl create configmap agentgateway-dashboard \
-    --from-file=agentgateway-overview.json="$DASHBOARD_JSON" \
-    --namespace monitoring --context $KUBECONTEXT_CLUSTER1 \
-    --dry-run=client -o yaml | \
-  kubectl label --local -f - grafana_dashboard="1" --dry-run=client -o yaml | \
-  kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -
-else
-  echo "WARNING: Grafana dashboard JSON not found at $DASHBOARD_JSON — skipping dashboard import"
-fi
+  echo "Observability stack installed."
+}
 
-echo "Observability stack installed."
+# =============================================================================
+# deploy_workloads — Shared by BOTH modes.
+# =============================================================================
+deploy_workloads() {
+  local ctx=$KUBECONTEXT_CLUSTER1
 
-# --- LLM backend, route, guardrails, rate limits ---
-echo "=== Configuring LLM backend and policies ==="
-kubectl create secret generic openai-secret -n agentgateway-system \
-  --from-literal="Authorization=Bearer $OPENAI_API_KEY" \
-  --dry-run=client -oyaml | kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -
+  # --- Deploy WGU workloads ---
+  echo "=== Deploying WGU demo workloads ==="
+  kubectl apply -f k8s/namespaces.yaml --context $ctx
+  kubectl apply -f k8s/services/graph-db-mock.yaml --context $ctx
+  kubectl apply -f k8s/services/data-product-api.yaml --context $ctx
+  kubectl rollout status deploy/graph-db-mock -n wgu-demo --watch --timeout=120s --context $ctx
+  kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=120s --context $ctx
 
-kubectl apply -f k8s/gateway/ --context $KUBECONTEXT_CLUSTER1
+  # --- Mesh policies and waypoint ---
+  echo "=== Applying mesh policies ==="
+  kubectl apply -f k8s/mesh/ --context $ctx
+  kubectl label namespace wgu-demo istio.io/use-waypoint=wgu-demo-waypoint --context $ctx --overwrite
+  kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=120s --context $ctx
 
-# Note: agentgateway-system is NOT enrolled in the ambient mesh.
-# Enrolling it breaks internal traffic (proxy -> OTEL collector, proxy -> rate limiter)
-# because ALLOW policies on the proxy deny internal pod-to-pod communication.
-# The agent gateway is still governed through its own policies (guardrails, rate limits, access logs).
+  # --- LLM backend, route, guardrails, rate limits ---
+  echo "=== Configuring LLM backend and policies ==="
+  kubectl create secret generic openai-secret -n agentgateway-system \
+    --from-literal="Authorization=Bearer $OPENAI_API_KEY" \
+    --dry-run=client -oyaml | kubectl apply --context $ctx -f -
 
-# --- Deploy enrollment chatbot ---
-echo "=== Deploying enrollment chatbot ==="
-kubectl apply -f k8s/services/enrollment-chatbot.yaml --context $KUBECONTEXT_CLUSTER1
-kubectl rollout status deploy/enrollment-chatbot -n wgu-demo-frontend --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
+  kubectl apply -f k8s/gateway/backend.yaml -f k8s/gateway/route.yaml \
+    -f k8s/gateway/guardrails.yaml -f k8s/gateway/rate-limit.yaml \
+    --context $ctx
 
-# --- Done ---
-echo ""
-echo "============================================"
-echo "  WGU Demo Workshop — Install Complete"
-echo "============================================"
-echo ""
-echo "Access the enrollment chatbot:"
-echo "  kubectl port-forward svc/enrollment-chatbot -n wgu-demo-frontend 8501:8501 --context $KUBECONTEXT_CLUSTER1"
-echo "  Open: http://localhost:8501"
-echo ""
-echo "Access Gloo UI (traces):"
-echo "  kubectl port-forward -n agentgateway-system svc/solo-enterprise-ui 4000:80 --context $KUBECONTEXT_CLUSTER1"
-echo "  Open: http://localhost:4000"
-echo ""
-echo "Access Grafana (metrics):"
-echo "  kubectl port-forward -n monitoring svc/grafana-prometheus 3000:3000 --context $KUBECONTEXT_CLUSTER1"
-echo "  Open: http://localhost:3000 (admin / prom-operator)"
-echo ""
-echo "Verify mesh enrollment:"
-echo "  solo-istioctl ztunnel-config workloads --context $KUBECONTEXT_CLUSTER1 | grep -E 'wgu-demo|agentgateway'"
-echo ""
+  # Note: agentgateway-system is NOT enrolled in the ambient mesh.
+  # Enrolling it breaks internal traffic (proxy -> OTEL collector, proxy -> rate limiter)
+  # because ALLOW policies on the proxy deny internal pod-to-pod communication.
+  # The agent gateway is still governed through its own policies (guardrails, rate limits, access logs).
+
+  # --- Deploy enrollment chatbot ---
+  echo "=== Deploying enrollment chatbot ==="
+  kubectl apply -f k8s/services/enrollment-chatbot.yaml --context $ctx
+  kubectl rollout status deploy/enrollment-chatbot -n wgu-demo-frontend --watch --timeout=120s --context $ctx
+
+  # --- Deploy ingress gateway ---
+  echo "=== Deploying ingress gateway ==="
+  kubectl apply -f k8s/gateway/ingress.yaml --context $ctx
+
+  echo "Waiting for ingress gateway..."
+  kubectl wait --for=condition=programmed gateway ingress \
+    -n agentgateway-system --context $ctx --timeout=120s
+  kubectl wait --for=condition=ready pod -l gateway.networking.k8s.io/gateway-name=ingress \
+    -n agentgateway-system --context $ctx --timeout=120s
+
+  # --- Apply ingress routes ---
+  echo "=== Applying ingress routes ==="
+  kubectl apply -f k8s/gateway/ingress-routes.yaml --context $ctx
+
+  # Detect which namespace solo-enterprise-ui is in (agentgateway-system or kagent)
+  local ui_ns=""
+  if kubectl get svc solo-enterprise-ui -n agentgateway-system --context $ctx &>/dev/null; then
+    ui_ns="agentgateway-system"
+  elif kubectl get svc solo-enterprise-ui -n kagent --context $ctx &>/dev/null; then
+    ui_ns="kagent"
+  fi
+
+  if [ -n "$ui_ns" ]; then
+    # Clean up stale ui-ingress-route from the other namespace if it exists
+    if [ "$ui_ns" = "kagent" ]; then
+      kubectl delete httproute ui-ingress-route -n agentgateway-system --context $ctx --ignore-not-found 2>/dev/null || true
+    else
+      kubectl delete httproute ui-ingress-route -n kagent --context $ctx --ignore-not-found 2>/dev/null || true
+    fi
+    echo "Found solo-enterprise-ui in $ui_ns — applying UI ingress route"
+    kubectl apply --context $ctx -f -<<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ui-ingress-route
+  namespace: $ui_ns
+spec:
+  hostnames:
+  - "ui.glootest.com"
+  parentRefs:
+  - name: ingress
+    namespace: agentgateway-system
+  rules:
+  - backendRefs:
+    - name: solo-enterprise-ui
+      port: 80
+    matches:
+    - path:
+        type: PathPrefix
+        value: /
+EOF
+    # Patch to ClusterIP if LoadBalancer (avoids port 80 conflict with ingress)
+    local svc_type=$(kubectl get svc solo-enterprise-ui -n $ui_ns --context $ctx -o jsonpath='{.spec.type}')
+    if [ "$svc_type" = "LoadBalancer" ]; then
+      kubectl patch svc solo-enterprise-ui -n $ui_ns --context $ctx \
+        --type=merge -p '{"spec":{"type":"ClusterIP"}}' 2>/dev/null || true
+    fi
+  else
+    echo "WARNING: solo-enterprise-ui not found in agentgateway-system or kagent — skipping UI route"
+  fi
+
+  # Import Agentgateway Grafana dashboard
+  DASHBOARD_JSON="${SCRIPT_DIR}/k8s/observability/agentgateway-grafana-dashboard-v1.json"
+  if [ -f "$DASHBOARD_JSON" ]; then
+    kubectl create configmap agentgateway-dashboard \
+      --from-file=agentgateway-overview.json="$DASHBOARD_JSON" \
+      --namespace monitoring --context $ctx \
+      --dry-run=client -o yaml | \
+    kubectl label --local -f - grafana_dashboard="1" --dry-run=client -o yaml | \
+    kubectl apply --context $ctx -f -
+  else
+    echo "WARNING: Grafana dashboard JSON not found at $DASHBOARD_JSON — skipping dashboard import"
+  fi
+}
+
+# =============================================================================
+# deploy_workloads_cluster2 — Deploy backend services to cluster2 for multicluster failover.
+# =============================================================================
+deploy_workloads_cluster2() {
+  local ctx=$KUBECONTEXT_CLUSTER2
+
+  echo "=== Deploying backend services to cluster2 ==="
+  kubectl apply -f k8s/namespaces.yaml --context $ctx
+  kubectl apply -f k8s/services/graph-db-mock.yaml --context $ctx
+  kubectl apply -f k8s/services/data-product-api.yaml --context $ctx
+  kubectl rollout status deploy/graph-db-mock -n wgu-demo --watch --timeout=120s --context $ctx
+  kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=120s --context $ctx
+
+  echo "=== Applying mesh policies on cluster2 ==="
+  kubectl apply -f k8s/mesh/ --context $ctx
+  kubectl label namespace wgu-demo istio.io/use-waypoint=wgu-demo-waypoint --context $ctx --overwrite
+  kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=120s --context $ctx
+
+  echo "Backend services deployed to cluster2."
+}
+
+# =============================================================================
+# configure_global_services — Label services as global on cluster2.
+# Cluster1 labeling is done by the demo UI page (live teaching moment).
+# =============================================================================
+configure_global_services() {
+  local ctx=$KUBECONTEXT_CLUSTER2
+
+  echo "=== Configuring global services on cluster2 ==="
+  for svc in data-product-api graph-db-mock; do
+    kubectl --context $ctx -n wgu-demo \
+      label service $svc solo.io/service-scope=global --overwrite
+    kubectl --context $ctx -n wgu-demo \
+      annotate service $svc networking.istio.io/traffic-distribution=PreferNetwork --overwrite
+  done
+
+  echo "Services labeled as global on cluster2."
+}
+
+# =============================================================================
+# print_access_info — Completion output block.
+# =============================================================================
+print_access_info() {
+  # --- Done ---
+  echo ""
+  echo "============================================"
+  echo "  WGU Demo Workshop — Install Complete"
+  echo "============================================"
+  echo ""
+  echo "Access via ingress gateway (requires /etc/hosts entries):"
+  echo "  http://enroll.glootest.com    — Enrollment chatbot"
+  echo "  http://grafana.glootest.com    — Grafana (admin / prom-operator)"
+  echo "  http://ui.glootest.com         — Gloo UI (traces)"
+  echo ""
+  echo "Ingress LoadBalancer IP:"
+  echo "  kubectl get svc ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}'"
+  echo ""
+  echo "Add to /etc/hosts:"
+  echo "  <INGRESS_IP> enroll.glootest.com grafana.glootest.com ui.glootest.com"
+  echo ""
+  echo "Fallback (port-forward):"
+  echo "  kubectl port-forward svc/enrollment-chatbot -n wgu-demo-frontend 8501:8501 --context $KUBECONTEXT_CLUSTER1"
+  echo "  kubectl port-forward -n agentgateway-system svc/solo-enterprise-ui 4000:80 --context $KUBECONTEXT_CLUSTER1"
+  echo "  kubectl port-forward -n monitoring svc/grafana-prometheus 3000:3000 --context $KUBECONTEXT_CLUSTER1"
+  echo ""
+  echo "Verify mesh enrollment:"
+  echo "  solo-istioctl ztunnel-config workloads --context $KUBECONTEXT_CLUSTER1 | grep -E 'wgu-demo|ingress'"
+  echo ""
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+INSTALL_MODE=$(prompt_mode)
+
+case "$INSTALL_MODE" in
+  full)
+    validate_full
+    install_infra
+    deploy_workloads
+    deploy_workloads_cluster2
+    configure_global_services
+    ;;
+  demo)
+    validate_demo
+    check_infra
+    deploy_workloads
+    ;;
+esac
+
+print_access_info
