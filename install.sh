@@ -510,7 +510,10 @@ deploy_workloads() {
 
   kubectl apply -f k8s/gateway/backend.yaml -f k8s/gateway/route.yaml \
     -f k8s/gateway/guardrails.yaml -f k8s/gateway/rate-limit.yaml \
+    -f k8s/gateway/abac-ext-authz.yaml \
     --context $ctx
+
+  kubectl rollout status deploy/abac-ext-authz -n agentgateway-system --watch --timeout=60s --context $ctx
 
   # Note: agentgateway-system is NOT enrolled in the ambient mesh.
   # Enrolling it breaks internal traffic (proxy -> OTEL collector, proxy -> rate limiter)
@@ -619,13 +622,17 @@ deploy_workloads_cluster2() {
 }
 
 # =============================================================================
-# configure_global_services — Label services as global on cluster2.
-# Cluster1 labeling is done by the demo UI page (live teaching moment).
+# configure_global_services — Ensure cluster2 services have global labels.
+# Cluster1 labels are already in the manifests (data-product-api.yaml).
+# DATA_PRODUCT_URL defaults to mesh.internal in the chatbot manifest.
 # =============================================================================
 configure_global_services() {
   local ctx=$KUBECONTEXT_CLUSTER2
 
   echo "=== Configuring global services on cluster2 ==="
+  # The manifest already has the global label and annotation for cluster1.
+  # Cluster2's apply also picks them up, but label/annotate explicitly
+  # in case the manifest was applied before the labels were added.
   for svc in data-product-api graph-db-mock; do
     kubectl --context $ctx -n wgu-demo \
       label service $svc solo.io/service-scope=global --overwrite
@@ -633,20 +640,7 @@ configure_global_services() {
       annotate service $svc networking.istio.io/traffic-distribution=PreferNetwork --overwrite
   done
 
-  # Patch DATA_PRODUCT_URL to mesh.internal for cross-cluster routing.
-  # Only DATA_PRODUCT_URL needs mesh.internal — it's the failover target.
-  # GRAPH_DB_URL stays as cluster.local because:
-  #   1. graph-db-mock is always accessed same-cluster (data-product → graph-db)
-  #   2. mesh.internal VIPs (240.240.0.0/12) bypass Istio authorization policies,
-  #      which would break the FERPA boundary enforcement on the Mesh Policies page
-  echo "=== Patching chatbot DATA_PRODUCT_URL for multicluster routing ==="
-  kubectl set env deploy/enrollment-chatbot -n wgu-demo-frontend \
-    DATA_PRODUCT_URL=http://data-product-api.wgu-demo.mesh.internal:8080 \
-    --context $KUBECONTEXT_CLUSTER1
-
-  kubectl rollout status deploy/enrollment-chatbot -n wgu-demo-frontend --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
-
-  echo "Services labeled as global on cluster2, chatbot URL patched for multicluster."
+  echo "Global services configured on cluster2."
 }
 
 # =============================================================================

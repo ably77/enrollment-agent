@@ -1,0 +1,49 @@
+# ABAC ext-authz server for agent-to-LLM access control.
+# Deployment + Service are deployed by install.sh (always running).
+# The EnterpriseAgentgatewayPolicy is applied/removed dynamically
+# by the Homepage ABAC toggle (or manually via the workshop doc).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: agentgateway-system
+  name: abac-ext-authz
+  labels:
+    app: abac-ext-authz
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: abac-ext-authz
+  template:
+    metadata:
+      labels:
+        app: abac-ext-authz
+        app.kubernetes.io/name: abac-ext-authz
+    spec:
+      containers:
+      - image: ably7/abac-ext-authz:latest
+        imagePullPolicy: Always
+        name: abac-ext-authz
+        ports:
+        - containerPort: 9000
+        env:
+        - name: PORT
+          value: "9000"
+        - name: ABAC_POLICIES
+          value: "enrollment-advisor:standard=gpt-4o-mini,analytics-agent:premium=gpt-4o|gpt-4o-mini"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: agentgateway-system
+  name: abac-ext-authz
+  labels:
+    app: abac-ext-authz
+spec:
+  ports:
+  - port: 4444
+    targetPort: 9000
+    protocol: TCP
+    appProtocol: kubernetes.io/h2c
+  selector:
+    app: abac-ext-authz

@@ -28,6 +28,9 @@ rules:
 - apiGroups: ["networking.istio.io"]
   resources: ["serviceentries"]
   verbs: ["get", "list"]
+- apiGroups: ["enterpriseagentgateway.solo.io"]
+  resources: ["enterpriseagentgatewaypolicies"]
+  verbs: ["get", "list", "create", "apply", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -62,7 +65,7 @@ spec:
       serviceAccountName: enrollment-chatbot
       containers:
       - name: enrollment-chatbot
-        image: ably7/enrollment-chatbot:0.0.17
+        image: ably7/enrollment-chatbot:0.1.1
         imagePullPolicy: Always
         ports:
         - containerPort: 8501
@@ -81,7 +84,7 @@ spec:
         - name: APP_TITLE
           value: "WGU Enrollment Advisor"
         - name: DATA_PRODUCT_URL
-          value: "http://data-product-api.wgu-demo.svc.cluster.local:8080"
+          value: "http://data-product-api.wgu-demo.mesh.internal:8080"
         - name: GRAPH_DB_URL
           value: "http://graph-db-mock.wgu-demo.svc.cluster.local:8081"
         - name: NS_BACKEND

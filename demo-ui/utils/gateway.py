@@ -16,6 +16,7 @@ def chat_completion(
     model: str = "gpt-4o-mini",
     tools: list[dict] | None = None,
     path: str = "/openai",
+    extra_headers: dict | None = None,
 ) -> tuple[int, dict]:
     """Send a chat completion request through the agent gateway.
 
@@ -27,6 +28,8 @@ def chat_completion(
         payload["tools"] = tools
 
     headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
         try:

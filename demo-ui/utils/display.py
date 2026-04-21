@@ -22,7 +22,8 @@ def render_error(status_code: int, body: dict):
     if status_code == 0:
         st.error(f"Connection failed: {body.get('error', 'Unknown error')}")
     elif status_code == 403:
-        st.error(f"Blocked by guardrail: {body.get('message', body)}")
+        msg = body.get("message") or body.get("error") or str(body)
+        st.error(f"Blocked by guardrail: {msg}")
     elif status_code == 422:
         st.error(f"PII detected: {body.get('message', body)}")
     elif status_code == 429:

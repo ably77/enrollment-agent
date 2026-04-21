@@ -53,6 +53,9 @@ metadata:
   namespace: wgu-demo
   labels:
     app: data-product-api
+    solo.io/service-scope: global
+  annotations:
+    networking.istio.io/traffic-distribution: PreferNetwork
 spec:
   selector:
     app: data-product-api

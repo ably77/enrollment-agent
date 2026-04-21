@@ -1,4 +1,4 @@
-# Token-level rate limiting — 10,000 tokens per minute per user.
+# Token-level rate limiting — 10,000 tokens per hour per user.
 # Demonstrates AI cost governance: per-agent or per-team budgets.
 # Set high enough for normal demo use; lower to 500 to demonstrate rate limiting.
 apiVersion: ratelimit.solo.io/v1alpha1
@@ -13,7 +13,7 @@ spec:
       value: wgu-enrollment
       rateLimit:
         requestsPerUnit: 10000
-        unit: MINUTE
+        unit: HOUR
     rateLimits:
     - actions:
       - genericKey:
