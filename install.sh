@@ -633,23 +633,20 @@ configure_global_services() {
       annotate service $svc networking.istio.io/traffic-distribution=PreferNetwork --overwrite
   done
 
-  # Patch service URLs to use mesh.internal hostnames for cross-cluster routing.
-  # svc.cluster.local is local-only DNS — mesh.internal is the global service hostname
-  # that Istio resolves across clusters.
-  echo "=== Patching service URLs for multicluster routing ==="
+  # Patch DATA_PRODUCT_URL to mesh.internal for cross-cluster routing.
+  # Only DATA_PRODUCT_URL needs mesh.internal — it's the failover target.
+  # GRAPH_DB_URL stays as cluster.local because:
+  #   1. graph-db-mock is always accessed same-cluster (data-product → graph-db)
+  #   2. mesh.internal VIPs (240.240.0.0/12) bypass Istio authorization policies,
+  #      which would break the FERPA boundary enforcement on the Mesh Policies page
+  echo "=== Patching chatbot DATA_PRODUCT_URL for multicluster routing ==="
   kubectl set env deploy/enrollment-chatbot -n wgu-demo-frontend \
     DATA_PRODUCT_URL=http://data-product-api.wgu-demo.mesh.internal:8080 \
-    GRAPH_DB_URL=http://graph-db-mock.wgu-demo.mesh.internal:8081 \
-    --context $KUBECONTEXT_CLUSTER1
-
-  kubectl set env deploy/data-product-api -n wgu-demo \
-    GRAPH_DB_URL=http://graph-db-mock.wgu-demo.mesh.internal:8081 \
     --context $KUBECONTEXT_CLUSTER1
 
   kubectl rollout status deploy/enrollment-chatbot -n wgu-demo-frontend --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
-  kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
 
-  echo "Services labeled as global on cluster2, URLs patched for multicluster."
+  echo "Services labeled as global on cluster2, chatbot URL patched for multicluster."
 }
 
 # =============================================================================
