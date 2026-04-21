@@ -16,6 +16,18 @@ rules:
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "patch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "patch"]
+- apiGroups: ["apps"]
+  resources: ["deployments/scale"]
+  verbs: ["get", "update"]
+- apiGroups: ["networking.istio.io"]
+  resources: ["serviceentries"]
+  verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -50,7 +62,7 @@ spec:
       serviceAccountName: enrollment-chatbot
       containers:
       - name: enrollment-chatbot
-        image: ably7/enrollment-chatbot:0.0.15
+        image: ably7/enrollment-chatbot:0.0.16
         imagePullPolicy: Always
         ports:
         - containerPort: 8501
