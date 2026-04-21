@@ -104,7 +104,7 @@ with tab1:
         st.markdown("---")
         st.markdown("**Auto-generated ServiceEntries** (may take a few seconds to appear):")
         if st.button("Check ServiceEntries", key="mc_btn_check_se"):
-            rc, out, err = kubectl("kubectl get serviceentry -n istio-system")
+            rc, out, err = kubectl("kubectl get serviceentry -A")
             if rc == 0 and out.strip():
                 st.code(out, language="text")
             elif rc == 0:
@@ -248,13 +248,18 @@ with tab4:
         st.session_state["mc_step4_done"] = True
 
     if st.session_state.get("mc_step4_done"):
+        all_ok = True
         for rc, out, err in st.session_state.get("mc_step4_results", []):
             if rc == 0:
                 st.code(out, language="text")
             else:
                 st.error(err.strip())
+                all_ok = False
 
-        st.success("data-product-api restored on this cluster.")
+        if all_ok:
+            st.success("data-product-api restored on this cluster.")
+        else:
+            st.warning("Restore may not have completed successfully — check errors above.")
 
         st.markdown("---")
         st.markdown("**Verify local is serving again:**")
