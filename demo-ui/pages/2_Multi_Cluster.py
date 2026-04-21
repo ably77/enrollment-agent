@@ -29,6 +29,9 @@ st.info(
     "with no application changes."
 )
 
+with open("assets/multicluster-failover-architecture.html", "r") as f:
+    st.components.v1.html(f.read(), height=900, scrolling=True)
+
 GLOBAL_LABEL_YAML = """\
 # Label a service as globally available across the mesh
 apiVersion: v1

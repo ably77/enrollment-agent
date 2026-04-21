@@ -65,7 +65,7 @@ spec:
       serviceAccountName: enrollment-chatbot
       containers:
       - name: enrollment-chatbot
-        image: ably7/enrollment-chatbot:0.1.1
+        image: ably7/enrollment-chatbot:0.1.4
         imagePullPolicy: Always
         ports:
         - containerPort: 8501
@@ -106,11 +106,8 @@ metadata:
   namespace: wgu-demo-frontend
   labels:
     app: enrollment-chatbot
-  # AWS/EKS: Add annotation for NLB:
-  # annotations:
-  #   service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
 spec:
-  type: ClusterIP  # AWS/EKS: Change to LoadBalancer
+  type: ClusterIP
   selector:
     app: enrollment-chatbot
   ports:

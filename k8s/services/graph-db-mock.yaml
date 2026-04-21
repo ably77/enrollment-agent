@@ -50,7 +50,6 @@ metadata:
   namespace: wgu-demo
   labels:
     app: graph-db-mock
-  # AWS/EKS: No annotations needed — internal service
 spec:
   selector:
     app: graph-db-mock

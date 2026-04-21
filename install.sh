@@ -16,6 +16,36 @@ export ISTIO_VERSION=${ISTIO_VERSION:-1.29.0}
 export ENTERPRISE_AGW_VERSION=${ENTERPRISE_AGW_VERSION:-v2.3.0}
 export AGW_UI_VERSION=${AGW_UI_VERSION:-0.3.12}
 
+# --- EKS detection ---
+# Auto-detect if cluster1 is EKS by checking the server URL for ".eks.amazonaws.com"
+detect_platform() {
+  local ctx=$1
+  local server
+  server=$(kubectl config view -o jsonpath="{.clusters[?(@.name==\"$(kubectl config view -o jsonpath="{.contexts[?(@.name==\"$ctx\")].context.cluster}")\")].cluster.server}" 2>/dev/null)
+  if [[ "$server" == *".eks.amazonaws.com"* ]]; then
+    echo "eks"
+  else
+    echo ""
+  fi
+}
+
+# Resolve LoadBalancer address (IP on GKE/kind, hostname on EKS NLB)
+get_lb_address() {
+  local svc=$1 ns=$2 ctx=$3
+  local ip hostname
+  ip=$(kubectl get svc "$svc" -n "$ns" --context "$ctx" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+  if [ -n "$ip" ]; then
+    echo "$ip"
+    return
+  fi
+  hostname=$(kubectl get svc "$svc" -n "$ns" --context "$ctx" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+  if [ -n "$hostname" ]; then
+    echo "$hostname"
+    return
+  fi
+  echo "<pending>"
+}
+
 # =============================================================================
 # prompt_mode — Interactive menu, returns "full" or "demo". Default=1 on empty Enter.
 # =============================================================================
@@ -168,7 +198,7 @@ install_infra() {
       --from-file=ca-key.pem=/tmp/wgu-root-key.pem \
       --from-file=root-cert.pem=/tmp/wgu-root-cert.pem \
       --from-file=cert-chain.pem=/tmp/wgu-root-cert.pem \
-      --context $CTX 2>/dev/null || true
+      --context $CTX --dry-run=client -oyaml | kubectl apply --context $CTX -f -
 
     helm upgrade --kube-context $CTX --install istio-base \
       oci://us-docker.pkg.dev/soloio-img/istio-helm/base \
@@ -257,8 +287,42 @@ EOF
   kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER2 2>/dev/null || true
   solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER1
   solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER2
+
+  # On EKS, add NLB annotation via the Gateway spec.infrastructure.annotations field.
+  # This propagates to the generated Service and tells the in-tree cloud controller
+  # to manage NodePort security group rules on the node SGs automatically.
+  if [ "$(detect_platform $KUBECONTEXT_CLUSTER1)" = "eks" ]; then
+    echo "EKS detected — patching east-west Gateways with NLB annotations..."
+    for ctx in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
+      kubectl patch gateway istio-eastwest -n istio-gateways --context "$ctx" --type=merge -p '
+spec:
+  infrastructure:
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+'
+    done
+  fi
+
   kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
   kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER2
+
+  # Wait for east-west gateway LoadBalancers to get external addresses (EKS NLBs can take 30-60s)
+  echo "Waiting for east-west gateway LoadBalancers..."
+  for ctx in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
+    for i in $(seq 1 30); do
+      local addr
+      addr=$(get_lb_address istio-eastwest istio-gateways "$ctx")
+      if [ "$addr" != "<pending>" ]; then
+        echo "  $ctx east-west LB: $addr"
+        break
+      fi
+      if [ $i -eq 30 ]; then
+        echo "WARNING: $ctx east-west LB still pending after 60s — multicluster link may fail"
+      fi
+      sleep 2
+    done
+  done
+
   solo-istioctl multicluster link --contexts=$KUBECONTEXT_CLUSTER1,$KUBECONTEXT_CLUSTER2 --namespace istio-gateways
 
   # --- Enterprise Agentgateway ---
@@ -648,21 +712,44 @@ configure_global_services() {
 # =============================================================================
 print_access_info() {
   # --- Done ---
+  local LB_ADDR
+  LB_ADDR=$(get_lb_address ingress agentgateway-system "$KUBECONTEXT_CLUSTER1")
+
   echo ""
   echo "============================================"
   echo "  WGU Demo Workshop — Install Complete"
   echo "============================================"
   echo ""
-  echo "Access via ingress gateway (requires /etc/hosts entries):"
+  echo "Access via ingress gateway (requires /etc/hosts or DNS):"
   echo "  http://enroll.glootest.com    — Enrollment chatbot"
   echo "  http://grafana.glootest.com    — Grafana (admin / prom-operator)"
   echo "  http://ui.glootest.com         — Gloo UI (traces)"
   echo ""
-  echo "Ingress LoadBalancer IP:"
-  echo "  kubectl get svc ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}'"
-  echo ""
-  echo "Add to /etc/hosts:"
-  echo "  <INGRESS_IP> enroll.glootest.com grafana.glootest.com ui.glootest.com"
+  echo "Ingress LoadBalancer address: $LB_ADDR"
+
+  # Detect if it's a hostname (EKS NLB) vs an IP
+  if [[ "$LB_ADDR" == *".elb."* || "$LB_ADDR" == *".amazonaws.com"* ]]; then
+    echo ""
+    echo "EKS NLB detected — resolve hostname to IP for /etc/hosts:"
+    echo "  nslookup $LB_ADDR"
+    echo ""
+    echo "Add to /etc/hosts (use one of the resolved IPs):"
+    # Try to resolve automatically
+    local RESOLVED_IP
+    RESOLVED_IP=$(dig +short "$LB_ADDR" 2>/dev/null | head -1)
+    if [ -n "$RESOLVED_IP" ]; then
+      echo "  $RESOLVED_IP enroll.glootest.com grafana.glootest.com ui.glootest.com"
+    else
+      echo "  <RESOLVED_IP> enroll.glootest.com grafana.glootest.com ui.glootest.com"
+    fi
+    echo ""
+    echo "NOTE: EKS NLB IPs can change. For production, use Route 53 CNAME records instead."
+  else
+    echo ""
+    echo "Add to /etc/hosts:"
+    echo "  $LB_ADDR enroll.glootest.com grafana.glootest.com ui.glootest.com"
+  fi
+
   echo ""
   echo "Fallback (port-forward):"
   echo "  kubectl port-forward svc/enrollment-chatbot -n wgu-demo-frontend 8501:8501 --context $KUBECONTEXT_CLUSTER1"

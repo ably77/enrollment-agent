@@ -49,11 +49,19 @@ kubectl cluster-info --context cluster1
 kubectl cluster-info --context cluster2
 ```
 
-> **AWS/EKS:** Use two EKS clusters in us-east-1 and us-west-2. Ensure the VPCs can reach each other (VPC peering or Transit Gateway). Set contexts to your EKS cluster names:
+> **AWS/EKS:** Use two EKS clusters in different regions (e.g., us-west-2 and us-east-2). VPC peering is **not** required — the east-west gateways use public NLB endpoints for cross-cluster peering. Rename your contexts to `cluster1`/`cluster2` for convenience:
 > ```bash
-> export KUBECONTEXT_CLUSTER1=arn:aws:eks:us-east-1:ACCOUNT:cluster/wgu-east
-> export KUBECONTEXT_CLUSTER2=arn:aws:eks:us-west-2:ACCOUNT:cluster/wgu-west
+> kubectl config rename-context <your-eks-west-context> cluster1
+> kubectl config rename-context <your-eks-east-context> cluster2
+> # OR set the env vars to match your existing context names:
+> export KUBECONTEXT_CLUSTER1=<your-eks-west-context>
+> export KUBECONTEXT_CLUSTER2=<your-eks-east-context>
 > ```
+>
+> **EKS prerequisites:**
+> - Each cluster needs at least 3 nodes with 4 vCPU / 16 GB (e.g., `m5.xlarge`)
+> - Node security groups allow outbound internet access (for Helm chart pulls, Docker Hub images)
+> - `dig` or `nslookup` installed (for resolving NLB hostnames to IPs for `/etc/hosts`)
 
 ### 1.2 CLI Tools
 
@@ -151,9 +159,9 @@ docker buildx build --builder ly-builder \
   -f demo-ui/Dockerfile demo-ui/
 ```
 
-> **If using Docker Hub images:** Update the `image:` fields in the k8s manifests to use the Docker Hub references (e.g., `ably7/graph-db-mock:latest`) and change `imagePullPolicy` from `IfNotPresent` to `Always` in each deployment. See the files in `k8s/services/`.
-
-> **AWS/EKS:** Push images to ECR instead:
+> **Default:** The k8s manifests already reference Docker Hub images (`ably7/*`) with `imagePullPolicy: Always`. These work on any platform including EKS without changes.
+>
+> **AWS/EKS (optional):** If you prefer ECR for air-gapped or private environments:
 > ```bash
 > aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ACCOUNT.dkr.ecr.us-east-1.amazonaws.com
 > docker tag graph-db-mock:latest ACCOUNT.dkr.ecr.us-east-1.amazonaws.com/wgu-demo/graph-db-mock:latest
@@ -292,7 +300,7 @@ multiCluster:
 EOF
 ```
 
-> **AWS/EKS:** Add `global.platform: eks` to the istio-cni values. If using Calico CNI, see the [Solo docs for EKS CNI compatibility](https://docs.solo.io).
+> **AWS/EKS:** No additional platform settings are needed for Solo Istio 1.29.0 on EKS. The ambient mesh works with the default AWS VPC CNI. If using Calico CNI, see the [Solo docs for EKS CNI compatibility](https://docs.solo.io).
 
 **Verify installation:**
 
@@ -453,6 +461,30 @@ for deploy in $(kubectl get deploy -n istio-gateways --context $KUBECONTEXT_CLUS
 done
 ```
 
+**Wait for LoadBalancer addresses** (EKS NLBs take 30-60s to provision):
+
+```bash
+# Verify the east-west gateways have external addresses
+kubectl get svc istio-eastwest -n istio-gateways --context $KUBECONTEXT_CLUSTER1
+kubectl get svc istio-eastwest -n istio-gateways --context $KUBECONTEXT_CLUSTER2
+# Both should show an EXTERNAL-IP (IP or hostname)
+```
+
+> **AWS/EKS:** The east-west Gateway needs the NLB annotation so the in-tree cloud controller auto-manages NodePort security group rules. Patch the Gateway's `spec.infrastructure.annotations` (the standard Gateway API mechanism to propagate annotations to generated Services):
+> ```bash
+> for ctx in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
+>   kubectl patch gateway istio-eastwest -n istio-gateways --context $ctx --type=merge -p '
+> spec:
+>   infrastructure:
+>     annotations:
+>       service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+> '
+> done
+> ```
+> If you have the AWS Load Balancer Controller installed, use `nlb-ip` with additional annotations for IP-mode targeting — see the [AWS Ambient Multicluster reference](https://docs.solo.io).
+>
+> The `install.sh` script handles this automatically when it detects EKS.
+
 **Link the clusters:**
 
 ```bash
@@ -607,7 +639,7 @@ spec:
     level: info
   service:
     spec:
-      type: ClusterIP  # AWS/EKS: Change to LoadBalancer and add NLB annotation
+      type: ClusterIP
   deployment:
     spec:
       replicas: 1
@@ -629,15 +661,7 @@ spec:
 EOF
 ```
 
-> **AWS/EKS:** Change the service type to `LoadBalancer` and add:
-> ```yaml
-> service:
->   metadata:
->     annotations:
->       service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
->   spec:
->     type: LoadBalancer
-> ```
+> **Note:** The agentgateway-proxy uses ClusterIP — it's accessed by the chatbot pod within the cluster, not directly from external clients. The separate **ingress gateway** (deployed in Section 5) handles external LoadBalancer access. This is the same on all platforms including EKS.
 
 **Enable access logs and tracing:**
 
@@ -1089,9 +1113,31 @@ solo-istioctl ztunnel-config workloads --context $KUBECONTEXT_CLUSTER1 | grep -E
 
 ### 5.3 Open the Enrollment Chatbot
 
+**Get the ingress address and configure `/etc/hosts`:**
+
+```bash
+# Get the LoadBalancer address
+kubectl get svc ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}'
+```
+
+> **AWS/EKS:** EKS NLBs return a hostname, not an IP. Resolve it to get an IP for `/etc/hosts`:
+> ```bash
+> NLB_HOST=$(kubectl get svc ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 \
+>   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+> dig +short "$NLB_HOST" | head -1
+> ```
+> Note: NLB IPs can change over time. For production, use Route 53 CNAME records instead of `/etc/hosts`.
+
+Add the resolved address to `/etc/hosts`:
+
+```
+<INGRESS_IP> enroll.glootest.com grafana.glootest.com ui.glootest.com
+```
+
 Open http://enroll.glootest.com
 
-> **Fallback:** If the ingress gateway is not available:
+> **Fallback:** If the ingress gateway is not available or DNS isn't resolving:
 > ```bash
 > kubectl port-forward svc/enrollment-chatbot -n wgu-demo-frontend 8501:8501 --context $KUBECONTEXT_CLUSTER1
 > ```

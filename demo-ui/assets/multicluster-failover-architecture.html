@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Multi-Cluster Failover Architecture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 24px;
+  }
+  .canvas { width: 1500px; position: relative; }
+  .title { text-align: center; margin-bottom: 6px; }
+  .title h1 { font-size: 24px; color: #e6edf3; font-weight: 600; }
+  .title p { font-size: 13px; color: #8b949e; }
+
+  #arrow-svg {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none; z-index: 10;
+  }
+
+  /* Cluster boxes */
+  .clusters { display: flex; gap: 0; margin-top: 14px; align-items: stretch; }
+  .cluster {
+    border: 1.5px solid #30363d;
+    border-radius: 10px;
+    padding: 20px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  .cluster-1 { flex: 3; }
+  .cluster-2 { flex: 2; margin-left: 24px; }
+  .cluster-label {
+    position: absolute; top: -12px; left: 20px;
+    background: #0d1117; padding: 0 8px;
+    font-size: 12px; color: #8b949e;
+  }
+  .cluster-label-accent { color: #58a6ff; font-weight: 600; }
+
+  /* Namespace boxes */
+  .ns {
+    border: 1.5px dashed;
+    border-radius: 8px;
+    padding: 16px;
+    position: relative;
+  }
+  .ns-label {
+    position: absolute; top: -10px; left: 12px;
+    background: #0d1117; padding: 0 6px;
+    font-size: 11px; font-family: monospace;
+  }
+  .ns-agw { border-color: #d29922; }
+  .ns-agw .ns-label { color: #d29922; }
+  .ns-frontend { border-color: #3b82f6; }
+  .ns-frontend .ns-label { color: #3b82f6; }
+  .ns-backend { border-color: #2ea043; }
+  .ns-backend .ns-label { color: #2ea043; }
+
+  /* Service boxes */
+  .svc {
+    background: #161b22;
+    border: 1.5px solid;
+    border-radius: 8px;
+    padding: 12px 16px;
+    text-align: center;
+    position: relative;
+    z-index: 2;
+  }
+  .svc h3 { font-size: 14px; font-weight: 600; color: #e6edf3; margin-bottom: 3px; }
+  .svc .sa { font-size: 10px; font-family: monospace; color: #8b949e; }
+  .svc .desc { font-size: 10px; color: #8b949e; margin-top: 2px; }
+  .svc-agw { border-color: #d29922; }
+  .svc-frontend { border-color: #3b82f6; }
+  .svc-backend { border-color: #2ea043; }
+  .svc-waypoint { border-color: #d29922; background: #1c1c0e; }
+  .svc-external { border-color: #484f58; background: #161b22; }
+
+  /* Dimmed service (unavailable in failover scenario) */
+  .svc-dimmed {
+    opacity: 0.4;
+    border-style: dashed;
+  }
+  .svc-failed::after {
+    content: 'FAILED';
+    position: absolute;
+    top: -9px; right: -6px;
+    font-size: 9px; font-weight: 700;
+    color: #f85149;
+    background: #0d1117;
+    padding: 1px 6px;
+    border: 1px solid #f85149;
+    border-radius: 3px;
+    opacity: 1;
+  }
+
+  /* Global-service badge */
+  .badge-global {
+    display: inline-block;
+    font-size: 9px;
+    font-family: monospace;
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid #58a6ff;
+    color: #58a6ff;
+    background: #0d1117;
+    margin-top: 4px;
+  }
+
+  /* Grids */
+  .c1-grid {
+    display: grid;
+    grid-template-columns: 200px 230px 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  .c2-inner { display: flex; flex-direction: column; flex: 1; }
+
+  /* ztunnel */
+  .ztunnel {
+    border: 1.5px solid #58a6ff;
+    border-radius: 8px;
+    padding: 10px 20px;
+    text-align: center;
+    background: #0d1117;
+    margin-top: auto;
+    padding-top: 16px;
+  }
+  .ztunnel-spacer { margin-top: 20px; }
+  .ztunnel h3 { font-size: 13px; color: #58a6ff; }
+  .ztunnel p { font-size: 10px; color: #8b949e; }
+
+  /* External */
+  .external-section {
+    margin-top: 18px;
+    display: flex;
+    align-items: center;
+    gap: 30px;
+  }
+  .ext-label { font-size: 11px; color: #8b949e; font-style: italic; }
+
+  /* Annotation */
+  .annotation {
+    font-size: 11px;
+    color: #8b949e;
+    text-align: center;
+    margin-top: 14px;
+    font-style: italic;
+    line-height: 1.5;
+  }
+  .annotation strong { color: #58a6ff; font-style: normal; }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 16px;
+    font-size: 12px;
+    color: #8b949e;
+    flex-wrap: wrap;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-line { width: 30px; height: 3px; border-radius: 2px; }
+  .legend-line.normal { background: #2ea043; }
+  .legend-line.failover {
+    background: repeating-linear-gradient(
+      to right, #58a6ff 0px, #58a6ff 6px, transparent 6px, transparent 10px
+    );
+  }
+  .legend-line.waypoint { background: #d29922; }
+  .legend-badge {
+    font-size: 9px; font-family: monospace;
+    padding: 1px 5px; border: 1px solid #58a6ff;
+    border-radius: 3px; color: #58a6ff;
+  }
+</style>
+</head>
+<body>
+<div class="canvas" id="canvas">
+  <div class="title">
+    <h1>Multi-Cluster Failover Architecture</h1>
+    <p>Cross-cluster service routing with Istio Ambient Mesh + Global Services</p>
+  </div>
+
+  <div class="clusters">
+    <!-- ==================== Cluster 1 ==================== -->
+    <div class="cluster cluster-1">
+      <span class="cluster-label">Cluster 1 <span class="cluster-label-accent">(Primary)</span></span>
+
+      <div class="c1-grid">
+        <!-- Col 1: agentgateway-system -->
+        <div>
+          <div class="ns ns-agw" style="min-height: 270px;">
+            <span class="ns-label">agentgateway-system</span>
+            <div class="svc svc-agw" id="ingress-c1" style="margin-bottom: 16px;">
+              <h3>Ingress</h3>
+              <div class="sa">SA: ingress</div>
+            </div>
+            <div class="svc svc-agw" id="agw-c1" style="margin-top: 28px;">
+              <h3>Agent Gateway</h3>
+              <div class="sa">SA: agentgateway-proxy</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Col 2: wgu-demo-frontend -->
+        <div>
+          <div class="ns ns-frontend" style="min-height: 120px;">
+            <span class="ns-label">wgu-demo-frontend</span>
+            <div class="svc svc-frontend" id="chatbot-c1">
+              <h3>Enrollment Chatbot</h3>
+              <div class="sa">SA: enrollment-chatbot</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Col 3: wgu-demo backend (cluster 1) -->
+        <div>
+          <div class="ns ns-backend" style="min-height: 270px;">
+            <span class="ns-label">wgu-demo (ambient + waypoint)</span>
+            <div class="svc svc-backend svc-dimmed svc-failed" id="data-api-c1" style="margin-bottom: 6px;">
+              <h3>Data Product API</h3>
+              <div class="sa">SA: data-product-api</div>
+              <div class="badge-global">solo.io/service-scope=global</div>
+            </div>
+            <div class="svc svc-backend svc-dimmed" id="graphdb-c1" style="margin-top: 28px;">
+              <h3>Graph DB Mock</h3>
+              <div class="sa">SA: graph-db-mock</div>
+              <div class="badge-global">solo.io/service-scope=global</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ztunnel ztunnel-spacer" id="ztunnel-c1">
+        <h3>ztunnel (per-node data plane)</h3>
+        <p>Automatic mTLS | L4 policy | HBONE tunneling</p>
+      </div>
+    </div>
+
+    <!-- ==================== Cluster 2 ==================== -->
+    <div class="cluster cluster-2">
+      <span class="cluster-label">Cluster 2 <span class="cluster-label-accent">(Failover)</span></span>
+
+      <div class="c2-inner">
+        <div class="ns ns-backend" style="min-height: 270px;">
+          <span class="ns-label">wgu-demo (ambient + waypoint)</span>
+          <div class="svc svc-backend" id="data-api-c2" style="margin-bottom: 6px;">
+            <h3>Data Product API</h3>
+            <div class="sa">SA: data-product-api</div>
+            <div class="badge-global">solo.io/service-scope=global</div>
+          </div>
+          <div class="svc svc-backend" id="graphdb-c2" style="margin-top: 28px;">
+            <h3>Graph DB Mock</h3>
+            <div class="sa">SA: graph-db-mock</div>
+            <div class="badge-global">solo.io/service-scope=global</div>
+          </div>
+        </div>
+
+        <div class="ztunnel ztunnel-spacer" id="ztunnel-c2">
+          <h3>ztunnel (per-node data plane)</h3>
+          <p>Automatic mTLS | L4 policy | HBONE tunneling</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Annotation -->
+  <div class="annotation">
+    When local endpoints are unavailable, ztunnel transparently routes to <strong>Cluster 2</strong> via cross-cluster mTLS &mdash;
+    zero application changes required.<br>
+    <strong>PreferNetwork</strong> ensures traffic returns to the local instance once it is healthy again.
+  </div>
+
+  <!-- External -->
+  <div class="external-section">
+    <div class="svc svc-external" id="llm" style="width: 220px;">
+      <h3>LLM Provider</h3>
+      <div class="desc">OpenAI / Anthropic</div>
+    </div>
+    <div class="svc svc-external" id="mcp" style="width: 220px;">
+      <h3>MCP Server</h3>
+      <div class="desc">in-cluster / remote</div>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="legend">
+    <div class="legend-item"><span>Legend:</span></div>
+    <div class="legend-item"><div class="legend-line normal"></div><span>Normal path</span></div>
+    <div class="legend-item"><div class="legend-line failover"></div><span>Failover path (cross-cluster)</span></div>
+    <div class="legend-item"><div class="legend-line waypoint"></div><span>Agent GW / LLM</span></div>
+    <div class="legend-item"><span class="legend-badge">solo.io/service-scope=global</span></div>
+  </div>
+
+  <!-- SVG arrow layer -->
+  <svg id="arrow-svg" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="ah-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#2ea043"/>
+      </marker>
+      <marker id="ah-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#58a6ff"/>
+      </marker>
+      <marker id="ah-yellow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#d29922"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const svg    = document.getElementById('arrow-svg');
+const cRect  = canvas.getBoundingClientRect();
+
+function pos(id) {
+  const r = document.getElementById(id).getBoundingClientRect();
+  return {
+    cx: r.left + r.width / 2 - cRect.left,
+    cy: r.top  + r.height / 2 - cRect.top,
+    left:   r.left   - cRect.left,
+    right:  r.right  - cRect.left,
+    top:    r.top    - cRect.top,
+    bottom: r.bottom - cRect.top,
+    w: r.width, h: r.height
+  };
+}
+
+function line(x1, y1, x2, y2, color, dash) {
+  const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  l.setAttribute('x1', x1); l.setAttribute('y1', y1);
+  l.setAttribute('x2', x2); l.setAttribute('y2', y2);
+  l.setAttribute('stroke', color);
+  l.setAttribute('stroke-width', '2.5');
+  if (dash) l.setAttribute('stroke-dasharray', '7,5');
+  const m = { '#2ea043':'ah-green', '#58a6ff':'ah-blue', '#d29922':'ah-yellow' };
+  l.setAttribute('marker-end', `url(#${m[color]})`);
+  svg.appendChild(l);
+}
+
+function curve(d, color, dash) {
+  const p = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  p.setAttribute('d', d);
+  p.setAttribute('stroke', color);
+  p.setAttribute('stroke-width', '2.5');
+  p.setAttribute('fill', 'none');
+  if (dash) p.setAttribute('stroke-dasharray', '8,5');
+  const m = { '#2ea043':'ah-green', '#58a6ff':'ah-blue', '#d29922':'ah-yellow' };
+  p.setAttribute('marker-end', `url(#${m[color]})`);
+  svg.appendChild(p);
+}
+
+function label(x, y, text, color, size) {
+  const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t.setAttribute('x', x); t.setAttribute('y', y);
+  t.setAttribute('fill', color);
+  t.setAttribute('font-size', size || '11');
+  t.setAttribute('font-weight', '600');
+  t.setAttribute('font-family', '-apple-system, BlinkMacSystemFont, sans-serif');
+  t.textContent = text;
+  svg.appendChild(t);
+}
+
+// Size SVG to canvas
+svg.setAttribute('width',  canvas.offsetWidth);
+svg.setAttribute('height', canvas.offsetHeight);
+svg.setAttribute('viewBox', `0 0 ${canvas.offsetWidth} ${canvas.offsetHeight}`);
+
+// Element positions
+const ingress   = pos('ingress-c1');
+const chatbot   = pos('chatbot-c1');
+const agw       = pos('agw-c1');
+const dApiC1    = pos('data-api-c1');
+const gdbC1     = pos('graphdb-c1');
+const dApiC2    = pos('data-api-c2');
+const gdbC2     = pos('graphdb-c2');
+const ztC1      = pos('ztunnel-c1');
+const ztC2      = pos('ztunnel-c2');
+const llm       = pos('llm');
+
+// ─── Normal path (green, solid) ───────────────────────────
+// Ingress → Chatbot
+line(ingress.right, ingress.cy, chatbot.left, chatbot.cy, '#2ea043', false);
+
+// Chatbot → Data Product API (cluster 1) — shown dimmed because scaled to 0
+// Draw as green dashed to show "normal but unavailable"
+line(chatbot.right, chatbot.cy, dApiC1.left, dApiC1.cy, '#2ea043', true);
+label(chatbot.right + 8, chatbot.cy - 8, 'NORMAL', '#2ea043');
+
+// Data Product API → Graph DB (cluster 1) — also dimmed context
+line(dApiC1.cx, dApiC1.bottom, gdbC1.cx, gdbC1.top, '#2ea043', true);
+
+// ─── Failover path (cyan, dashed) ─────────────────────────
+// Chatbot → Data Product API (cluster 2) — cross-cluster failover
+// Smooth horizontal arc from chatbot right side to cluster 2, offset below the normal arrow
+const fStartX = chatbot.right;
+const fStartY = chatbot.cy + 18;
+const fEndX   = dApiC2.left;
+const fEndY   = dApiC2.cy;
+const fDip    = 50;  // how far the curve dips below
+const fMidX   = (fStartX + fEndX) / 2;
+curve(
+  `M ${fStartX} ${fStartY} ` +
+  `C ${fStartX + 80} ${fStartY + fDip}, ${fEndX - 80} ${fEndY + fDip}, ${fEndX} ${fEndY}`,
+  '#58a6ff', true
+);
+label(fMidX + 30, fStartY + fDip + 14, 'FAILOVER', '#58a6ff', '12');
+
+// Data Product API → Graph DB (cluster 2)
+line(dApiC2.cx, dApiC2.bottom, gdbC2.cx, gdbC2.top, '#58a6ff', false);
+
+// ─── Cross-cluster ztunnel link ───────────────────────────
+line(ztC1.right, ztC1.cy, ztC2.left, ztC2.cy, '#58a6ff', true);
+label((ztC1.right + ztC2.left) / 2 - 60, ztC1.cy - 10, 'Cross-Cluster mTLS', '#58a6ff');
+
+// ─── Agent Gateway / LLM (yellow, dashed) ─────────────────
+line(chatbot.left, chatbot.bottom, agw.right, agw.top, '#d29922', true);
+label(agw.right + 50, agw.top - 10, 'LLM + Guardrails', '#d29922');
+
+// Agent Gateway → LLM Provider
+line(agw.cx, agw.bottom + 8, llm.cx, llm.top, '#d29922', true);
+
+// Agent Gateway → MCP Server
+const mcp = pos('mcp');
+line(agw.cx + 20, agw.bottom + 8, mcp.cx, mcp.top, '#d29922', true);
+</script>
+</body>
+</html>

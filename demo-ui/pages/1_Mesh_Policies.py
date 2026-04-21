@@ -21,7 +21,7 @@ inject_theme()
 st.title("Mesh Authorization Policies")
 st.caption("Zero-trust enforcement demo | Istio Ambient Mesh")
 
-with open("assets/mesh-architecture-draft.html", "r") as f:
+with open("assets/mesh-architecture.html", "r") as f:
     st.components.v1.html(f.read(), height=900, scrolling=True)
 
 POLICY_DIR = "/app/k8s/mesh"
