@@ -182,11 +182,74 @@ install_infra() {
     chmod +x /usr/local/bin/solo-istioctl
   fi
 
-  # --- Shared root CA ---
-  echo "=== Generating shared root CA ==="
-  openssl req -new -newkey rsa:4096 -x509 -sha256 \
-    -days 3650 -nodes -subj "/O=Solo.io/CN=Root CA" \
-    -keyout /tmp/wgu-root-key.pem -out /tmp/wgu-root-cert.pem 2>/dev/null
+  # --- Shared root CA with intermediate ---
+  echo "=== Generating shared root CA and intermediate ==="
+  WORK_DIR=$(mktemp -d)
+
+  cat > "$WORK_DIR/root-openssl.cnf" <<'CNFEOF'
+[ req ]
+prompt = no
+distinguished_name = dn
+x509_extensions = v3_ca
+
+[ dn ]
+C  = US
+ST = California
+L  = San Francisco
+O  = MyOrg
+OU = MyUnit
+CN = root-cert
+
+[ v3_ca ]
+basicConstraints = critical, CA:TRUE, pathlen:1
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+CNFEOF
+
+  cat > "$WORK_DIR/intermediate-req.cnf" <<'CNFEOF'
+[ req ]
+prompt = no
+distinguished_name = dn
+
+[ dn ]
+C  = US
+ST = California
+L  = San Francisco
+O  = MyOrg
+OU = MyUnit
+CN = istio-intermediate-ca
+CNFEOF
+
+  cat > "$WORK_DIR/ca-ext.cnf" <<'CNFEOF'
+[v3_ca]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+CNFEOF
+
+  openssl req -x509 -sha256 -nodes -days 3650 \
+    -newkey rsa:2048 \
+    -keyout "$WORK_DIR/root-key.pem" \
+    -out "$WORK_DIR/root-cert.pem" \
+    -config "$WORK_DIR/root-openssl.cnf" \
+    -extensions v3_ca 2>/dev/null
+
+  openssl req -new -nodes -newkey rsa:2048 \
+    -keyout "$WORK_DIR/ca-key.pem" \
+    -out "$WORK_DIR/ca.csr" \
+    -config "$WORK_DIR/intermediate-req.cnf" 2>/dev/null
+
+  openssl x509 -req -sha256 -days 3650 \
+    -in "$WORK_DIR/ca.csr" \
+    -CA "$WORK_DIR/root-cert.pem" \
+    -CAkey "$WORK_DIR/root-key.pem" \
+    -CAcreateserial \
+    -out "$WORK_DIR/ca-cert.pem" \
+    -extfile "$WORK_DIR/ca-ext.cnf" \
+    -extensions v3_ca 2>/dev/null
+
+  cat "$WORK_DIR/ca-cert.pem" "$WORK_DIR/root-cert.pem" > "$WORK_DIR/cert-chain.pem"
 
   # --- Install Istio on both clusters ---
   install_istio() {
@@ -195,10 +258,10 @@ install_infra() {
 
     kubectl create namespace istio-system --context $CTX 2>/dev/null || true
     kubectl create secret generic cacerts -n istio-system \
-      --from-file=ca-cert.pem=/tmp/wgu-root-cert.pem \
-      --from-file=ca-key.pem=/tmp/wgu-root-key.pem \
-      --from-file=root-cert.pem=/tmp/wgu-root-cert.pem \
-      --from-file=cert-chain.pem=/tmp/wgu-root-cert.pem \
+      --from-file=ca-cert.pem="$WORK_DIR/ca-cert.pem" \
+      --from-file=ca-key.pem="$WORK_DIR/ca-key.pem" \
+      --from-file=root-cert.pem="$WORK_DIR/root-cert.pem" \
+      --from-file=cert-chain.pem="$WORK_DIR/cert-chain.pem" \
       --context $CTX --dry-run=client -oyaml | kubectl apply --context $CTX -f -
 
     helm upgrade --kube-context $CTX --install istio-base \
@@ -281,6 +344,7 @@ EOF
 
   install_istio $KUBECONTEXT_CLUSTER1 $MESH_NAME_CLUSTER1
   install_istio $KUBECONTEXT_CLUSTER2 $MESH_NAME_CLUSTER2
+  rm -rf "$WORK_DIR"
 
   # --- Multi-cluster linking ---
   echo "=== Linking clusters ==="

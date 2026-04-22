@@ -67,7 +67,9 @@ Solo's platform.
 
 ### 1.1 Cluster Setup
 
-This workshop runs on **two Kubernetes clusters**. Bring your own clusters — any Kubernetes distribution (EKS, GKE, AKS, kind, k3d, etc.) will work as long as you have two contexts available.
+This workshop runs on **two Kubernetes clusters**. Bring your own clusters — any Kubernetes distribution (EKS, GKE, AKS, kind, k3d, etc.) will work as long as you have two contexts available. This workshop has been tested on EKS and Colima.
+
+> **Platform-specific prerequisites:** Some Kubernetes platforms require additional configuration for Istio ambient mode. See the [Istio platform prerequisites](https://istio.io/latest/docs/ambient/install/platform-prerequisites/) for details.
 
 **Set up named contexts:**
 
@@ -142,10 +144,8 @@ jq --version
 # Solo trial license (get from your Solo.io account team)
 export SOLO_TRIAL_LICENSE_KEY=<your-license-key>
 
-# LLM API key (OpenAI or Anthropic — workshop supports either)
+# LLM API key
 export OPENAI_API_KEY=<your-openai-key>
-# OR
-export CLAUDE_API_KEY=<your-anthropic-key>
 ```
 
 ### 1.4 Demo Container Images
@@ -155,7 +155,7 @@ The k8s manifests already reference pre-built Docker Hub images (`ably7/*`) with
 If you need to rebuild images (e.g., after modifying source code), push to a registry accessible by your clusters:
 
 ```bash
-cd /path/to/wgu-workshop
+cd /path/to/enrollment-agent
 
 # Graph DB mock
 docker buildx build --platform linux/amd64,linux/arm64 \
@@ -199,9 +199,8 @@ kubectl get nodes --context cluster2
 # License key set
 echo $SOLO_TRIAL_LICENSE_KEY | head -c 10
 
-# At least one LLM API key set
+# LLM API key set
 [ -n "$OPENAI_API_KEY" ] && echo "OpenAI key set" || echo "OpenAI key NOT set"
-[ -n "$CLAUDE_API_KEY" ] && echo "Anthropic key set" || echo "Anthropic key NOT set"
 ```
 
 ---
@@ -212,23 +211,104 @@ echo $SOLO_TRIAL_LICENSE_KEY | head -c 10
 
 ### 2.1 Install Solo Istio Ambient Mesh on Cluster 1
 
-**Create the istio-system namespace and shared root trust:**
+**Generate shared root trust secret:**
+
+Both clusters must share the same root of trust so that workloads can verify each other's mTLS certificates across cluster boundaries. Generate a self-signed root CA and intermediate CA:
+
+```bash
+WORK_DIR=$(mktemp -d)
+
+cat > "$WORK_DIR/root-openssl.cnf" <<'CNFEOF'
+[ req ]
+prompt = no
+distinguished_name = dn
+x509_extensions = v3_ca
+
+[ dn ]
+C  = US
+ST = California
+L  = San Francisco
+O  = MyOrg
+OU = MyUnit
+CN = root-cert
+
+[ v3_ca ]
+basicConstraints = critical, CA:TRUE, pathlen:1
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+CNFEOF
+
+cat > "$WORK_DIR/intermediate-req.cnf" <<'CNFEOF'
+[ req ]
+prompt = no
+distinguished_name = dn
+
+[ dn ]
+C  = US
+ST = California
+L  = San Francisco
+O  = MyOrg
+OU = MyUnit
+CN = istio-intermediate-ca
+CNFEOF
+
+cat > "$WORK_DIR/ca-ext.cnf" <<'CNFEOF'
+[v3_ca]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+CNFEOF
+
+# Generate root CA
+openssl req -x509 -sha256 -nodes -days 3650 \
+  -newkey rsa:2048 \
+  -keyout "$WORK_DIR/root-key.pem" \
+  -out "$WORK_DIR/root-cert.pem" \
+  -config "$WORK_DIR/root-openssl.cnf" \
+  -extensions v3_ca
+
+# Generate intermediate CA signed by root
+openssl req -new -nodes -newkey rsa:2048 \
+  -keyout "$WORK_DIR/ca-key.pem" \
+  -out "$WORK_DIR/ca.csr" \
+  -config "$WORK_DIR/intermediate-req.cnf"
+
+openssl x509 -req -sha256 -days 3650 \
+  -in "$WORK_DIR/ca.csr" \
+  -CA "$WORK_DIR/root-cert.pem" \
+  -CAkey "$WORK_DIR/root-key.pem" \
+  -CAcreateserial \
+  -out "$WORK_DIR/ca-cert.pem" \
+  -extfile "$WORK_DIR/ca-ext.cnf" \
+  -extensions v3_ca
+
+cat "$WORK_DIR/ca-cert.pem" "$WORK_DIR/root-cert.pem" > "$WORK_DIR/cert-chain.pem"
+
+# Write secret YAML to local file (will be applied to both clusters)
+cat <<EOF > shared-root-trust-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cacerts
+  namespace: istio-system
+type: Opaque
+data:
+  ca-cert.pem: $(base64 < "$WORK_DIR/ca-cert.pem" | tr -d '\n')
+  ca-key.pem: $(base64 < "$WORK_DIR/ca-key.pem" | tr -d '\n')
+  cert-chain.pem: $(base64 < "$WORK_DIR/cert-chain.pem" | tr -d '\n')
+  root-cert.pem: $(base64 < "$WORK_DIR/root-cert.pem" | tr -d '\n')
+EOF
+
+rm -rf "$WORK_DIR"
+echo "Generated shared-root-trust-secret.yaml"
+```
+
+**Create the istio-system namespace and apply the shared root trust:**
 
 ```bash
 kubectl create namespace istio-system --context $KUBECONTEXT_CLUSTER1
-
-# Generate shared root CA for multi-cluster trust
-# (In production, use your organization's PKI)
-openssl req -new -newkey rsa:4096 -x509 -sha256 \
-  -days 3650 -nodes -subj "/O=Solo.io/CN=Root CA" \
-  -keyout root-key.pem -out root-cert.pem
-
-kubectl create secret generic cacerts -n istio-system \
-  --from-file=ca-cert.pem=root-cert.pem \
-  --from-file=ca-key.pem=root-key.pem \
-  --from-file=root-cert.pem=root-cert.pem \
-  --from-file=cert-chain.pem=root-cert.pem \
-  --context $KUBECONTEXT_CLUSTER1
+kubectl apply -f shared-root-trust-secret.yaml --context $KUBECONTEXT_CLUSTER1
 ```
 
 **Install Istio components:**
@@ -850,25 +930,6 @@ kubectl apply -f k8s/gateway/backend.yaml --context $KUBECONTEXT_CLUSTER1
 kubectl apply -f k8s/gateway/route.yaml --context $KUBECONTEXT_CLUSTER1
 ```
 
-> If using Anthropic instead, create the secret and modify `k8s/gateway/backend.yaml`:
-> ```bash
-> kubectl create secret generic anthropic-secret -n agentgateway-system \
->   --from-literal="Authorization=$CLAUDE_API_KEY" \
->   --dry-run=client -oyaml | kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -
-> ```
-> And change the backend spec to:
-> ```yaml
-> spec:
->   ai:
->     provider:
->       anthropic:
->         model: "claude-3-5-haiku-latest"
->   policies:
->     auth:
->       secretRef:
->         name: anthropic-secret
-> ```
-
 **Test the route:**
 
 Open a port-forward to the agent gateway in a separate terminal (or background it). All subsequent `curl` tests in this workshop use this port-forward:
@@ -1089,8 +1150,6 @@ echo "=== Who can reach the graph DB? ==="
 kubectl get authorizationpolicy data-product-to-graphdb -n wgu-demo -o yaml --context $KUBECONTEXT_CLUSTER1
 # Answer: Only wgu-demo/data-product-api
 ```
-
-> **Note:** The agent gateway namespace (`agentgateway-system`) is intentionally NOT enrolled in the ambient mesh. Enrolling it breaks internal traffic (proxy → OTEL collector, rate limiter, Prometheus scraping). The agent gateway has its own governance layer (guardrails, rate limits, ext-authz, access logs, tracing).
 
 > **For leadership:** Student data access is identity-scoped, not network-scoped. The graph DB doesn't care what subnet you're on — it only accepts requests from the data product API's cryptographic identity. This is a fundamentally stronger security model than Security Groups.
 
@@ -1422,18 +1481,6 @@ Each log line shows the HTTP method, path, ABAC header values, and the ALLOWED/D
 [abac-ext-authz] POST /openai | role=enrollment-advisor tier=standard model=gpt-4o
 [abac-ext-authz] DENIED: agent "enrollment-advisor" (standard) not authorized for model "gpt-4o" (allowed: gpt-4o-mini)
 ```
-
-### 5.7 ABAC Cleanup
-
-Remove the ABAC resources when done with this section:
-
-```bash
-kubectl delete enterpriseagentgatewaypolicy -n agentgateway-system abac-ext-auth-policy --context $KUBECONTEXT_CLUSTER1
-kubectl delete deployment -n agentgateway-system abac-ext-authz --context $KUBECONTEXT_CLUSTER1
-kubectl delete service -n agentgateway-system abac-ext-authz --context $KUBECONTEXT_CLUSTER1
-```
-
-The `wgu-enrollment` route continues to work without ABAC once the policy is removed.
 
 > **For leadership:** This demonstrates extensibility — the agent gateway's ext-authz integration lets you bring your own authorization logic (ABAC, OPA, custom policy engines) without modifying the gateway itself. The same pattern works for any custom governance requirement: compliance checks, budget validation, approval workflows.
 
