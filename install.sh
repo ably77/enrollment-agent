@@ -606,7 +606,7 @@ spec:
     tracing:
       backendRef:
         name: solo-enterprise-telemetry-collector
-        namespace: agentgateway-system
+        namespace: kagent
         port: 4317
       protocol: GRPC
       randomSampling: "true"
