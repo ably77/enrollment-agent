@@ -1,4 +1,4 @@
-# WGU Demo Workshop: Solo.io Ambient Mesh + Agent Gateway
+# Demo Workshop: Solo.io Ambient Mesh + Agent Gateway
 
 A hands-on workshop demonstrating Istio Ambient Mesh, Enterprise Agentgateway,
 unified security/governance, BYO ABAC external authorization, and an end-to-end
@@ -8,6 +8,58 @@ Solo's platform.
 **Audiences:**
 - **Platform engineers:** Step-by-step commands, real configs, verification at every step
 - **Architecture/leadership:** Business context callouts showing governance, compliance, and TCO impact
+
+---
+
+## Table of Contents
+
+1. [Prerequisites & Environment Setup](#section-1-prerequisites--environment-setup)
+   - [1.1 Cluster Setup](#11-cluster-setup)
+   - [1.2 CLI Tools](#12-cli-tools)
+   - [1.3 License and API Keys](#13-license-and-api-keys)
+   - [1.4 Build Demo Container Images](#14-build-demo-container-images)
+   - [1.5 Verification Checkpoint](#15-verification-checkpoint)
+2. [Istio Ambient Mesh](#section-2-istio-ambient-mesh)
+   - [2.1 Install Solo Istio Ambient Mesh on Cluster 1](#21-install-solo-istio-ambient-mesh-on-cluster-1)
+   - [2.2 Install Solo Istio Ambient Mesh on Cluster 2](#22-install-solo-istio-ambient-mesh-on-cluster-2)
+   - [2.3 Deploy WGU Demo Workloads](#23-deploy-wgu-demo-workloads)
+   - [2.4 Verify mTLS Enrollment](#24-verify-mtls-enrollment)
+   - [2.5 Multi-Cluster Connectivity](#25-multi-cluster-connectivity)
+   - [2.6 Deploy Waypoint for L7 Traffic Management](#26-deploy-waypoint-for-l7-traffic-management)
+   - [2.7 AuthorizationPolicy — Zero Trust](#27-authorizationpolicy--zero-trust)
+3. [Agent Gateway & Agent Mesh](#section-3-agent-gateway--agent-mesh)
+   - [3.1 Install Enterprise Agentgateway](#31-install-enterprise-agentgateway)
+   - [3.2 Install Observability Stack](#32-install-observability-stack)
+   - [3.3 Configure LLM Backend](#33-configure-llm-backend)
+   - [3.4 Add Guardrails](#34-add-guardrails)
+   - [3.5 Token-Level Rate Limiting](#35-token-level-rate-limiting)
+   - [3.6 Observability](#36-observability)
+4. [Security & Governance (Deep Dive)](#section-4-security--governance-deep-dive)
+   - [4.1 Centralized Policy View](#41-centralized-policy-view)
+   - [4.2 RBAC for Service-to-Service](#42-rbac-for-service-to-service)
+   - [4.3 Audit Logging and Compliance Reporting](#43-audit-logging-and-compliance-reporting)
+   - [4.4 Policy Enforcement Demonstration](#44-policy-enforcement-demonstration)
+5. [BYO ABAC External Authorization (ext-authz)](#section-5-byo-abac-external-authorization-ext-authz)
+   - [5.1 Overview](#51-overview)
+   - [5.2 Deploy the ABAC ext-authz Server](#52-deploy-the-abac-ext-authz-server)
+   - [5.3 Verify the Route Works Without ABAC](#53-verify-the-route-works-without-abac)
+   - [5.4 Apply the ABAC ext-authz Policy](#54-apply-the-abac-ext-authz-policy)
+   - [5.5 Test ABAC Enforcement](#55-test-abac-enforcement)
+   - [5.6 View ext-authz Logs](#56-view-ext-authz-logs)
+   - [5.7 ABAC Cleanup](#57-abac-cleanup)
+6. [The Home Run — End-to-End Enrollment Scenario](#section-6-the-home-run--end-to-end-enrollment-scenario)
+   - [6.1 Deploy the Enrollment Chatbot](#61-deploy-the-enrollment-chatbot)
+   - [6.2 Verify Mesh Enrollment](#62-verify-mesh-enrollment)
+   - [6.3 Deploy the Ingress Gateway](#63-deploy-the-ingress-gateway)
+   - [6.4 Open the Enrollment Chatbot](#64-open-the-enrollment-chatbot)
+   - [6.5 Run the Demo Scenario](#65-run-the-demo-scenario)
+   - [6.6 Demo UI — ABAC Simulation](#66-demo-ui--abac-simulation)
+   - [6.7 Observe the Full Chain](#67-observe-the-full-chain)
+   - [6.8 The Complete Picture](#68-the-complete-picture)
+7. [Without Solo — The AWS-Native Alternative](#section-7-without-solo--the-aws-native-alternative)
+   - [7.1 Side-by-Side Comparison](#71-side-by-side-comparison)
+   - [7.2 The Same Request, Without Solo](#72-the-same-request-without-solo)
+8. [Cleanup](#cleanup)
 
 ---
 
@@ -1670,41 +1722,6 @@ Tracing the same enrollment chatbot request through AWS-native services:
 - **Neptune in a private subnet** with a VPC endpoint
 - **Cross-region access** (if Neptune is in us-east-1 and the caller is in us-west-2): Transit Gateway or VPC peering + cross-region DNS resolution + NAT considerations
 - **No unified audit trail**: CloudTrail logs the Neptune API call, but it's in a different log stream from the API Gateway access log, the Lambda execution log, and the Comprehend PII detection log. Correlating a single student request across all four systems requires custom log aggregation.
-
-### 7.3 WGU-Specific Pain Points
-
-These are real issues from WGU's environment. Each one is eliminated by the mesh.
-
-#### 1. Orphaned VPC endpoint that can't be deleted
-
-**The problem:** A VPC endpoint was created for a service that was later decommissioned. The endpoint can't be deleted because an IAM policy references it, and the policy can't be modified because of organizational SCPs. The orphaned endpoint costs money and clutters the VPC configuration.
-
-**With Solo:** No VPC endpoints needed. Services discover each other through the mesh. Remove a service by deleting its deployment — no orphaned infrastructure. `kubectl delete deployment` is always clean.
-
-#### 2. Neptune private graph endpoint required `hashicorp/awscc` provider
-
-**The problem:** Neptune Analytics uses a different API surface than classic Neptune. The standard `hashicorp/aws` Terraform provider doesn't support Neptune Analytics graph endpoints. WGU had to add the `hashicorp/awscc` provider from a different registry, manage two provider configurations, and deal with inconsistent resource lifecycle management between the two providers.
-
-**With Solo:** Graph database access goes through the mesh like any other service. The Terraform configuration is one module for the mesh infrastructure. Individual service networking is handled by Kubernetes manifests — `Service`, `Deployment`, `AuthorizationPolicy`. No per-service networking Terraform. No provider conflicts.
-
-#### 3. Cross-region Lambda-to-Neptune connectivity took weeks
-
-**The problem:** A Lambda function in us-west-2 needed to query Neptune in us-east-1. This required: Transit Gateway configuration, cross-region VPC peering, private DNS resolution across regions, security group rules for the cross-region path, and IAM role configuration for cross-account/cross-region access. Total time to production: weeks.
-
-**With Solo:** Multi-cluster mesh linking handles cross-region connectivity. A service in us-east-1 calls a service in us-west-2 the same way it calls a service in the same cluster:
-
-```yaml
-# This works across clusters — mesh handles the routing
-curl http://data-product-api.wgu-demo.svc.cluster.local:8080/students/WGU_2024_00142
-```
-
-No VPC peering. No Transit Gateway. No cross-region DNS. One `solo-istioctl multicluster link` command.
-
-#### 4. ServiceNow and AWS Control Tower evaluated and found lacking
-
-**The problem:** WGU evaluated ServiceNow for IT governance and AWS Control Tower for multi-account security posture. Neither addresses the specific needs of service mesh governance or AI agent governance. ServiceNow is an ITSM tool, not a runtime policy engine. Control Tower manages account-level guardrails, not service-to-service authorization or LLM prompt filtering.
-
-**With Solo:** Purpose-built governance for service mesh + AI agents. Runtime policy enforcement (not just configuration auditing). Declarative policies that are enforced in the data path, not checked after the fact. One platform for both human-facing services and autonomous AI agents.
 
 ---
 
