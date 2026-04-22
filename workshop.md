@@ -505,7 +505,7 @@ kubectl rollout status deploy/istiod -n istio-system --watch --timeout=90s --con
 kubectl rollout status ds/ztunnel -n istio-system --watch --timeout=90s --context $KUBECONTEXT_CLUSTER2
 ```
 
-### 2.3 Deploy WGU Demo Workloads
+### 2.3 Deploy Demo Workloads
 
 ```bash
 # Create namespaces (already labeled for ambient mesh enrollment)
@@ -1768,6 +1768,9 @@ done
 # Delete namespaces
 kubectl delete namespace agentgateway-system kagent monitoring --context $KUBECONTEXT_CLUSTER1
 kubectl delete namespace solo-enterprise --context $KUBECONTEXT_CLUSTER2
+
+# Clean up generated cert files
+rm -f shared-root-trust-secret.yaml
 
 # Delete or stop your clusters as needed for your environment
 ```

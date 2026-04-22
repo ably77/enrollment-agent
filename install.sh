@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# WGU Demo Workshop — Full Install Script
+# Enrollment Agent Demo — Full Install Script
 # Prerequisites: cluster1 and cluster2 contexts available, SOLO_TRIAL_LICENSE_KEY and OPENAI_API_KEY set
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,7 +84,7 @@ validate_full() {
   echo "=== Validating prerequisites ==="
   for var in SOLO_TRIAL_LICENSE_KEY OPENAI_API_KEY; do
     if [ -z "${!var}" ]; then
-      echo "ERROR: $var is not set"
+      echo "ERROR: $var is not set. Run: export $var=<your-key>"
       exit 1
     fi
   done
@@ -100,7 +100,7 @@ validate_full() {
 validate_demo() {
   echo "=== Validating prerequisites (demo-only mode) ==="
   if [ -z "${OPENAI_API_KEY}" ]; then
-    echo "ERROR: OPENAI_API_KEY is not set"
+    echo "ERROR: OPENAI_API_KEY is not set. Run: export OPENAI_API_KEY=<your-key>"
     exit 1
   fi
   kubectl cluster-info --context $KUBECONTEXT_CLUSTER1 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER1"; exit 1; }
@@ -810,7 +810,7 @@ print_access_info() {
 
   echo ""
   echo "============================================"
-  echo "  WGU Demo Workshop — Install Complete"
+  echo "  Enrollment Agent Demo — Install Complete"
   echo "============================================"
   echo ""
   echo "Access via ingress gateway (requires /etc/hosts or DNS):"
