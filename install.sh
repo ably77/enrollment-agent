@@ -89,8 +89,14 @@ validate_full() {
     fi
   done
   kubectl cluster-info --context $KUBECONTEXT_CLUSTER1 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER1"; exit 1; }
-  kubectl cluster-info --context $KUBECONTEXT_CLUSTER2 > /dev/null 2>&1 || { echo "ERROR: Cannot reach $KUBECONTEXT_CLUSTER2"; exit 1; }
-  echo "Clusters reachable, credentials set."
+
+  if kubectl cluster-info --context $KUBECONTEXT_CLUSTER2 > /dev/null 2>&1; then
+    CLUSTER2_REACHABLE=true
+    echo "Both clusters reachable, credentials set."
+  else
+    CLUSTER2_REACHABLE=false
+    echo "Cluster1 reachable, cluster2 not found — single-cluster mode (multicluster failover disabled)."
+  fi
 }
 
 # =============================================================================
@@ -343,52 +349,59 @@ EOF
   }
 
   install_istio $KUBECONTEXT_CLUSTER1 $MESH_NAME_CLUSTER1
-  install_istio $KUBECONTEXT_CLUSTER2 $MESH_NAME_CLUSTER2
+
+  if [ "$CLUSTER2_REACHABLE" = "true" ]; then
+    install_istio $KUBECONTEXT_CLUSTER2 $MESH_NAME_CLUSTER2
+  fi
   rm -rf "$WORK_DIR"
 
-  # --- Multi-cluster linking ---
-  echo "=== Linking clusters ==="
-  kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
-  kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER2 2>/dev/null || true
-  solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER1
-  solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER2
+  if [ "$CLUSTER2_REACHABLE" = "true" ]; then
+    # --- Multi-cluster linking ---
+    echo "=== Linking clusters ==="
+    kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
+    kubectl create ns istio-gateways --context $KUBECONTEXT_CLUSTER2 2>/dev/null || true
+    solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER1
+    solo-istioctl multicluster expose --namespace istio-gateways --context $KUBECONTEXT_CLUSTER2
 
-  # On EKS, add NLB annotation via the Gateway spec.infrastructure.annotations field.
-  # This propagates to the generated Service and tells the in-tree cloud controller
-  # to manage NodePort security group rules on the node SGs automatically.
-  if [ "$(detect_platform $KUBECONTEXT_CLUSTER1)" = "eks" ]; then
-    echo "EKS detected — patching east-west Gateways with NLB annotations..."
-    for ctx in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
-      kubectl patch gateway istio-eastwest -n istio-gateways --context "$ctx" --type=merge -p '
+    # On EKS, add NLB annotation via the Gateway spec.infrastructure.annotations field.
+    # This propagates to the generated Service and tells the in-tree cloud controller
+    # to manage NodePort security group rules on the node SGs automatically.
+    if [ "$(detect_platform $KUBECONTEXT_CLUSTER1)" = "eks" ]; then
+      echo "EKS detected — patching east-west Gateways with NLB annotations..."
+      for ctx in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
+        kubectl patch gateway istio-eastwest -n istio-gateways --context "$ctx" --type=merge -p '
 spec:
   infrastructure:
     annotations:
       service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
 '
+      done
+    fi
+
+    kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
+    kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER2
+
+    # Wait for east-west gateway LoadBalancers to get external addresses (EKS NLBs can take 30-60s)
+    echo "Waiting for east-west gateway LoadBalancers..."
+    for ctx in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
+      for i in $(seq 1 30); do
+        local addr
+        addr=$(get_lb_address istio-eastwest istio-gateways "$ctx")
+        if [ "$addr" != "<pending>" ]; then
+          echo "  $ctx east-west LB: $addr"
+          break
+        fi
+        if [ $i -eq 30 ]; then
+          echo "WARNING: $ctx east-west LB still pending after 60s — multicluster link may fail"
+        fi
+        sleep 2
+      done
     done
+
+    solo-istioctl multicluster link --contexts=$KUBECONTEXT_CLUSTER1,$KUBECONTEXT_CLUSTER2 --namespace istio-gateways
+  else
+    echo "=== Skipping multi-cluster linking (single-cluster mode) ==="
   fi
-
-  kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
-  kubectl rollout status deploy -n istio-gateways --watch --timeout=120s --context $KUBECONTEXT_CLUSTER2
-
-  # Wait for east-west gateway LoadBalancers to get external addresses (EKS NLBs can take 30-60s)
-  echo "Waiting for east-west gateway LoadBalancers..."
-  for ctx in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
-    for i in $(seq 1 30); do
-      local addr
-      addr=$(get_lb_address istio-eastwest istio-gateways "$ctx")
-      if [ "$addr" != "<pending>" ]; then
-        echo "  $ctx east-west LB: $addr"
-        break
-      fi
-      if [ $i -eq 30 ]; then
-        echo "WARNING: $ctx east-west LB still pending after 60s — multicluster link may fail"
-      fi
-      sleep 2
-    done
-  done
-
-  solo-istioctl multicluster link --contexts=$KUBECONTEXT_CLUSTER1,$KUBECONTEXT_CLUSTER2 --namespace istio-gateways
 
   # --- Enterprise Agentgateway ---
   echo "=== Installing Enterprise Agentgateway ==="
@@ -447,7 +460,7 @@ spec:
     level: info
   service:
     spec:
-      type: ClusterIP
+      type: LoadBalancer
   deployment:
     spec:
       replicas: 1
@@ -874,8 +887,10 @@ case "$INSTALL_MODE" in
     validate_full
     install_infra
     deploy_workloads
-    deploy_workloads_cluster2
-    configure_global_services
+    if [ "$CLUSTER2_REACHABLE" = "true" ]; then
+      deploy_workloads_cluster2
+      configure_global_services
+    fi
     ;;
   demo)
     validate_demo
