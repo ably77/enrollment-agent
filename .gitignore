@@ -23,6 +23,9 @@ Thumbs.db
 CLAUDE.md
 .superpowers/
 
+# Dev scripts
+build-and-redeploy.sh
+
 # Notes
 notes/
 

@@ -67,26 +67,14 @@ Solo's platform.
 
 ### 1.1 Cluster Setup
 
-This workshop runs on **two Kubernetes clusters**. The primary path uses local Colima clusters.
+This workshop runs on **two Kubernetes clusters**. Bring your own clusters — any Kubernetes distribution (EKS, GKE, AKS, kind, k3d, etc.) will work as long as you have two contexts available.
 
-> **Already have clusters running?** If you already have `cluster1` and `cluster2` available via `kubectx`, skip cluster creation and jump straight to setting the context variables below.
-
-**Start two Colima clusters (skip if clusters are already running):**
-
-```bash
-# Cluster 1 (primary)
-colima start --profile cluster1 --cpu 4 --memory 8 --kubernetes --kubernetes-version v1.30.0
-
-# Cluster 2 (secondary)
-colima start --profile cluster2 --cpu 4 --memory 8 --kubernetes --kubernetes-version v1.30.0
-```
-
-**Set up named contexts (skip rename if contexts are already named cluster1/cluster2):**
+**Set up named contexts:**
 
 ```bash
 # Rename contexts for convenience (only needed if contexts have different names)
-kubectl config rename-context colima-cluster1 cluster1
-kubectl config rename-context colima-cluster2 cluster2
+kubectl config rename-context <your-cluster1-context> cluster1
+kubectl config rename-context <your-cluster2-context> cluster2
 
 # Set environment variables used throughout the workshop
 export KUBECONTEXT_CLUSTER1=cluster1
@@ -160,59 +148,35 @@ export OPENAI_API_KEY=<your-openai-key>
 export CLAUDE_API_KEY=<your-anthropic-key>
 ```
 
-### 1.4 Build Demo Container Images
+### 1.4 Demo Container Images
 
-There are two options for loading images into the clusters:
+The k8s manifests already reference pre-built Docker Hub images (`ably7/*`) with `imagePullPolicy: Always`. **No image building is required** — the clusters will pull images automatically.
 
-#### Option A: Build locally and load into Colima (no registry needed)
-
-```bash
-cd /path/to/wgu-workshop
-
-# Graph DB mock
-docker build -t graph-db-mock:latest -f services/graph-db-mock/Dockerfile services/graph-db-mock/
-colima nerdctl --profile cluster1 -- load graph-db-mock:latest
-colima nerdctl --profile cluster2 -- load graph-db-mock:latest
-
-# Data Product API
-docker build -t data-product-api:latest -f services/data-product-api/Dockerfile services/data-product-api/
-colima nerdctl --profile cluster1 -- load data-product-api:latest
-
-# Enrollment Chatbot
-docker build -t enrollment-chatbot:latest -f demo-ui/Dockerfile demo-ui/
-colima nerdctl --profile cluster1 -- load enrollment-chatbot:latest
-```
-
-#### Option B: Multi-platform build and push to Docker Hub (using ly-builder)
-
-If you want images available across clusters or want to avoid the `colima nerdctl` load step, push to Docker Hub using the `ly-builder` buildx builder:
+If you need to rebuild images (e.g., after modifying source code), push to a registry accessible by your clusters:
 
 ```bash
 cd /path/to/wgu-workshop
 
 # Graph DB mock
-docker buildx build --builder ly-builder \
-  --platform linux/amd64,linux/arm64 \
-  -t ably7/graph-db-mock:latest \
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t <your-registry>/graph-db-mock:latest \
   --push \
   -f services/graph-db-mock/Dockerfile services/graph-db-mock/
 
 # Data Product API
-docker buildx build --builder ly-builder \
-  --platform linux/amd64,linux/arm64 \
-  -t ably7/data-product-api:latest \
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t <your-registry>/data-product-api:latest \
   --push \
   -f services/data-product-api/Dockerfile services/data-product-api/
 
 # Enrollment Chatbot
-docker buildx build --builder ly-builder \
-  --platform linux/amd64,linux/arm64 \
-  -t ably7/enrollment-chatbot:latest \
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t <your-registry>/enrollment-chatbot:latest \
   --push \
   -f demo-ui/Dockerfile demo-ui/
 ```
 
-> **Default:** The k8s manifests already reference Docker Hub images (`ably7/*`) with `imagePullPolicy: Always`. These work on any platform including EKS without changes.
+> Update the image references in the k8s manifests if using a different registry.
 >
 > **AWS/EKS (optional):** If you prefer ECR for air-gapped or private environments:
 > ```bash
@@ -1758,7 +1722,5 @@ done
 kubectl delete namespace agentgateway-system kagent monitoring --context $KUBECONTEXT_CLUSTER1
 kubectl delete namespace solo-enterprise --context $KUBECONTEXT_CLUSTER2
 
-# Stop Colima clusters (local only — skip if using pre-existing clusters)
-colima stop --profile cluster1
-colima stop --profile cluster2
+# Delete or stop your clusters as needed for your environment
 ```
