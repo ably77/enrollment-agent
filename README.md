@@ -111,20 +111,6 @@ Defined in `k8s/gateway/guardrails.yaml`. Protections include:
 - **Credential leakage** — blocks AWS keys, API keys, private keys, passwords
 - **Response masking** — redacts PII in LLM output
 
-## Building
-
-> **Note:** The default Docker Hub registry is `ably7/`. Update the image references in `build-and-redeploy.sh` and `k8s/services/` manifests to point to your own registry before building.
-
-```bash
-# Rebuild and deploy the chatbot (auto-increments version)
-./build-and-redeploy.sh
-
-# Explicit version
-./build-and-redeploy.sh 0.0.1
-```
-
-Images are multi-arch (amd64/arm64).
-
 ## Testing
 
 ```bash
@@ -160,7 +146,6 @@ cd services/data-product-api && PYTHONPATH=. pytest tests/ -v
 │   └── gateway/                # Backend, HTTPRoute, guardrails, rate limit
 ├── install.sh                  # Full install (or demo-only mode)
 ├── cleanup.sh                  # Tear down everything
-├── build-and-redeploy.sh       # Quick chatbot rebuild cycle
 ├── workshop.md                 # 6-section workshop document
 └── workshop-byo-abac-ext-authz.md  # ABAC ext-authz workshop
 ```
