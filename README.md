@@ -29,6 +29,22 @@ Student Browser
 | **ABAC Architecture** | BYO ext-authz ABAC demo with gRPC external authorization |
 | **Multi-Cluster** | Multicluster failover between two clusters |
 
+### Homepage
+
+![Homepage — AI enrollment chatbot](images/homepage-1.png)
+
+### Mesh Authorization Policies
+
+![Mesh Authorization Policies — zero-trust enforcement](images/mesh-authorization-policies-1.png)
+
+### ABAC Ext-Authz
+
+![ABAC Ext-Authz Flow — attribute-based access control](images/abac-extauthz-1.png)
+
+### Multi-Cluster Failover
+
+![Multi-Cluster Failover — cross-cluster routing](images/multi-cluster-failover-1.png)
+
 ## Prerequisites
 
 - Two Kubernetes clusters (`cluster1`, `cluster2` contexts)
