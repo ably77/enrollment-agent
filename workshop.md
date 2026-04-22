@@ -792,6 +792,39 @@ spec:
 EOF
 ```
 
+**Enable tracing — send traces to the OTEL collector for the Solo Management UI:**
+
+```bash
+kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: tracing
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: agentgateway-proxy
+  frontend:
+    tracing:
+      backendRef:
+        name: solo-enterprise-telemetry-collector
+        namespace: kagent
+        port: 4317
+      protocol: GRPC
+      randomSampling: "true"
+      attributes:
+        add:
+        - name: jwt
+          expression: jwt
+        - name: response.body
+          expression: json(response.body)
+EOF
+```
+
+> **Note:** The telemetry collector (`solo-enterprise-telemetry-collector`) is deployed in the `kagent` namespace as part of the Solo Management UI in the next step. Traces won't flow until that's installed.
+
 **Verify:**
 
 ```bash
