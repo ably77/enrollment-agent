@@ -504,9 +504,23 @@ kubectl get serviceentry -n istio-system --context $KUBECONTEXT_CLUSTER2
 
 > **For leadership:** This replaces VPC peering, PrivateLink, Transit Gateway, Route53 private hosted zones, and cross-region DNS configuration. One command links two clusters. Services discover each other automatically.
 
-### 2.6 AuthorizationPolicy — Zero Trust
+### 2.6 Deploy Waypoint for L7 Traffic Management
 
-Apply the deny-all baseline and explicit allow policies:
+The waypoint proxy is required for L7 policy enforcement (AuthorizationPolicy with `targetRefs`). Deploy it before applying authorization policies so the ALLOW rules have an enforcement point.
+
+```bash
+kubectl apply -f k8s/mesh/waypoint.yaml --context $KUBECONTEXT_CLUSTER1
+
+# Enable waypoint for the namespace
+kubectl label namespace wgu-demo istio.io/use-waypoint=wgu-demo-waypoint --context $KUBECONTEXT_CLUSTER1
+
+# Wait for waypoint
+kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
+```
+
+### 2.7 AuthorizationPolicy — Zero Trust
+
+Apply the deny-all baseline, explicit allow policies, and the waypoint L4 allow:
 
 ```bash
 # Deny all by default
@@ -515,9 +529,12 @@ kubectl apply -f k8s/mesh/deny-all.yaml --context $KUBECONTEXT_CLUSTER1
 # Allow only the paths needed for the enrollment scenario
 kubectl apply -f k8s/mesh/chatbot-to-data-product.yaml --context $KUBECONTEXT_CLUSTER1
 kubectl apply -f k8s/mesh/data-product-to-graphdb.yaml --context $KUBECONTEXT_CLUSTER1
+
+# Allow the waypoint's second hop through ztunnel (L4)
+kubectl apply -f k8s/mesh/waypoint-to-backends.yaml --context $KUBECONTEXT_CLUSTER1
 ```
 
-> **Note on waypoint + AuthorizationPolicy:** The ALLOW policies include the waypoint service account (`wgu-demo-waypoint`) in addition to the actual source service. This is because when a waypoint is in the path, the second hop (waypoint → destination) presents the waypoint's identity to ztunnel. Both the original caller AND the waypoint SA must be allowed.
+> **Note on waypoint + AuthorizationPolicy:** The ALLOW policies use `targetRefs` for L7 enforcement at the waypoint — they check the real caller identity. But the waypoint makes a second HBONE connection to the destination pod, presenting its own identity at L4. The `waypoint-to-backends` policy allows this second hop through ztunnel. Both the L7 caller check AND the L4 waypoint allow are needed.
 
 **Verify deny-all works:**
 
@@ -541,18 +558,6 @@ kubectl exec deploy/data-product-api -n wgu-demo --context $KUBECONTEXT_CLUSTER1
 Expected: `200 {"status":"healthy"}`
 
 > **For leadership:** This is your FERPA boundary. Only explicitly authorized services can reach student data. The policies are 5 lines of YAML, not hundreds of Security Group rules and IAM policies.
-
-### 2.7 Deploy Waypoint for L7 Traffic Management
-
-```bash
-kubectl apply -f k8s/mesh/waypoint.yaml --context $KUBECONTEXT_CLUSTER1
-
-# Enable waypoint for the namespace
-kubectl label namespace wgu-demo istio.io/use-waypoint=wgu-demo-waypoint --context $KUBECONTEXT_CLUSTER1
-
-# Wait for waypoint
-kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
-```
 
 **Verification checkpoint:**
 
@@ -850,12 +855,14 @@ kubectl apply -f k8s/gateway/route.yaml --context $KUBECONTEXT_CLUSTER1
 
 **Test the route:**
 
-```bash
-GATEWAY_IP=$(kubectl get svc -n agentgateway-system \
-  --selector=gateway.networking.k8s.io/gateway-name=agentgateway-proxy \
-  -o jsonpath='{.items[*].spec.clusterIP}' --context $KUBECONTEXT_CLUSTER1)
+Open a port-forward to the agent gateway in a separate terminal (or background it). All subsequent `curl` tests in this workshop use this port-forward:
 
-curl -s "$GATEWAY_IP:8080/openai" \
+```bash
+kubectl port-forward -n agentgateway-system svc/agentgateway-proxy 8080:8080 --context $KUBECONTEXT_CLUSTER1 &
+```
+
+```bash
+curl -s "localhost:8080/openai" \
   -H "content-type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -875,7 +882,7 @@ kubectl apply -f k8s/gateway/guardrails.yaml --context $KUBECONTEXT_CLUSTER1
 
 ```bash
 # This should be BLOCKED — contains a fake SSN
-curl -s -w "\n%{http_code}" "$GATEWAY_IP:8080/openai" \
+curl -s -w "\n%{http_code}" "localhost:8080/openai" \
   -H "content-type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -889,7 +896,7 @@ Expected: `422` with message "Request blocked: personally identifiable informati
 
 ```bash
 # This should be BLOCKED — prompt injection attempt
-curl -s -w "\n%{http_code}" "$GATEWAY_IP:8080/openai" \
+curl -s -w "\n%{http_code}" "localhost:8080/openai" \
   -H "content-type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -902,7 +909,7 @@ Expected: `403` with message "Request blocked: prompt injection attempt detected
 **Test normal request (should pass):**
 
 ```bash
-curl -s "$GATEWAY_IP:8080/openai" \
+curl -s "localhost:8080/openai" \
   -H "content-type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -916,17 +923,55 @@ Expected: A normal LLM response.
 
 ### 3.5 Token-Level Rate Limiting
 
+The default rate limit is 100,000 tokens per hour — high enough for normal demo use. To demonstrate rate limiting in the workshop, temporarily lower it to 500 tokens per hour:
+
 ```bash
-kubectl apply -f k8s/gateway/rate-limit.yaml --context $KUBECONTEXT_CLUSTER1
+# Apply rate limit (edit k8s/gateway/rate-limit.yaml requestsPerUnit to 500 first, or apply inline)
+kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<EOF
+apiVersion: ratelimit.solo.io/v1alpha1
+kind: RateLimitConfig
+metadata:
+  name: wgu-enrollment-token-limit
+  namespace: agentgateway-system
+spec:
+  raw:
+    descriptors:
+    - key: generic_key
+      value: wgu-enrollment
+      rateLimit:
+        requestsPerUnit: 500
+        unit: HOUR
+    rateLimits:
+    - actions:
+      - genericKey:
+          descriptorValue: wgu-enrollment
+      type: TOKEN
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: wgu-enrollment-rate-limit
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - name: agentgateway-proxy
+    group: gateway.networking.k8s.io
+    kind: Gateway
+  traffic:
+    entRateLimit:
+      global:
+        rateLimitConfigRefs:
+        - name: wgu-enrollment-token-limit
+EOF
 ```
 
 **Test by sending multiple requests:**
 
 ```bash
-# Send several requests to consume the 500 token/minute budget
+# Send several requests to consume the 500 token/hour budget
 for i in $(seq 1 5); do
   echo "Request $i:"
-  curl -s -w "HTTP %{http_code}\n" "$GATEWAY_IP:8080/openai" \
+  curl -s -w "HTTP %{http_code}\n" "localhost:8080/openai" \
     -H "content-type: application/json" \
     -d '{
       "model": "gpt-4o-mini",
@@ -937,6 +982,12 @@ done
 ```
 
 Expected: First few requests succeed (200), later requests get rate limited (429).
+
+**Restore the production rate limit** after testing:
+
+```bash
+kubectl apply -f k8s/gateway/rate-limit.yaml --context $KUBECONTEXT_CLUSTER1
+```
 
 > **For leadership:** This is your AI cost governance. Per-agent or per-team token budgets enforced at the gateway. No custom DynamoDB counters or Lambda middleware needed.
 
@@ -1013,11 +1064,6 @@ Every connection shows mTLS identity, authorization status, and traffic metrics.
 Review the principal-based access control:
 
 ```bash
-echo "=== Who can reach the agent gateway? ==="
-kubectl get authorizationpolicy chatbot-to-agentgateway -n agentgateway-system -o yaml --context $KUBECONTEXT_CLUSTER1
-# Answer: Only wgu-demo-frontend/enrollment-chatbot
-
-echo ""
 echo "=== Who can reach the data product API? ==="
 kubectl get authorizationpolicy chatbot-to-data-product -n wgu-demo -o yaml --context $KUBECONTEXT_CLUSTER1
 # Answer: Only wgu-demo-frontend/enrollment-chatbot
@@ -1027,6 +1073,8 @@ echo "=== Who can reach the graph DB? ==="
 kubectl get authorizationpolicy data-product-to-graphdb -n wgu-demo -o yaml --context $KUBECONTEXT_CLUSTER1
 # Answer: Only wgu-demo/data-product-api
 ```
+
+> **Note:** The agent gateway namespace (`agentgateway-system`) is intentionally NOT enrolled in the ambient mesh. Enrolling it breaks internal traffic (proxy → OTEL collector, rate limiter, Prometheus scraping). The agent gateway has its own governance layer (guardrails, rate limits, ext-authz, access logs, tracing).
 
 > **For leadership:** Student data access is identity-scoped, not network-scoped. The graph DB doesn't care what subnet you're on — it only accepts requests from the data product API's cryptographic identity. This is a fundamentally stronger security model than Security Groups.
 
@@ -1077,7 +1125,7 @@ Expected: `HTTP 000` — connection refused. RBAC denied at ztunnel level (L4 re
 **Test 2: PII in prompt (gateway layer)**
 
 ```bash
-curl -s -w "\nHTTP %{http_code}" "$GATEWAY_IP:8080/openai" \
+curl -s -w "\nHTTP %{http_code}" "localhost:8080/openai" \
   -H "content-type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -1092,7 +1140,7 @@ Expected: `HTTP 422` — PII detected, request blocked.
 ```bash
 # Send a burst to exhaust the token budget
 for i in $(seq 1 10); do
-  STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$GATEWAY_IP:8080/openai" \
+  STATUS=$(curl -s -o /dev/null -w "%{http_code}" "localhost:8080/openai" \
     -H "content-type: application/json" \
     -d '{
       "model": "gpt-4o-mini",
@@ -1222,7 +1270,7 @@ EOF
 Confirm the `wgu-enrollment` route is healthy before locking it down:
 
 ```bash
-curl -i "$GATEWAY_IP:8080/openai" \
+curl -i "localhost:8080/openai" \
   -H "content-type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -1270,7 +1318,7 @@ EOF
 **Test 1: No agent identity → denied**
 
 ```bash
-curl -i "$GATEWAY_IP:8080/openai" \
+curl -i "localhost:8080/openai" \
   -H "content-type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -1283,7 +1331,7 @@ Expected: `403 Forbidden` — `denied by ABAC: missing required header: x-agent-
 **Test 2: enrollment-advisor + gpt-4o-mini → allowed**
 
 ```bash
-curl -i "$GATEWAY_IP:8080/openai" \
+curl -i "localhost:8080/openai" \
   -H "content-type: application/json" \
   -H "x-agent-role: enrollment-advisor" \
   -H "x-agent-tier: standard" \
@@ -1299,7 +1347,7 @@ Expected: `200` with a completion. Response includes `x-abac-decision: allowed` 
 **Test 3: enrollment-advisor + gpt-4o → denied**
 
 ```bash
-curl -i "$GATEWAY_IP:8080/openai" \
+curl -i "localhost:8080/openai" \
   -H "content-type: application/json" \
   -H "x-agent-role: enrollment-advisor" \
   -H "x-agent-tier: standard" \
@@ -1315,7 +1363,7 @@ Expected: `403 Forbidden` — `denied by ABAC: agent "enrollment-advisor" (stand
 **Test 4: analytics-agent + gpt-4o → allowed**
 
 ```bash
-curl -i "$GATEWAY_IP:8080/openai" \
+curl -i "localhost:8080/openai" \
   -H "content-type: application/json" \
   -H "x-agent-role: analytics-agent" \
   -H "x-agent-tier: premium" \
@@ -1331,7 +1379,7 @@ Expected: `200` with a completion.
 **Test 5: unauthorized-agent → denied**
 
 ```bash
-curl -i "$GATEWAY_IP:8080/openai" \
+curl -i "localhost:8080/openai" \
   -H "content-type: application/json" \
   -H "x-agent-role: unauthorized-agent" \
   -H "x-agent-tier: standard" \
@@ -1409,7 +1457,46 @@ Expected: All pods `1/1 Running`.
 solo-istioctl ztunnel-config workloads --context $KUBECONTEXT_CLUSTER1 | grep -E "wgu-demo|agentgateway"
 ```
 
-### 6.3 Open the Enrollment Chatbot
+### 6.3 Deploy the Ingress Gateway
+
+Deploy the ingress gateway, routes, and the mesh auth policy that allows the ingress to reach the chatbot:
+
+```bash
+# Ingress gateway (LoadBalancer:80) with hostname-based routing
+kubectl apply -f k8s/gateway/ingress.yaml --context $KUBECONTEXT_CLUSTER1
+kubectl apply -f k8s/gateway/ingress-routes.yaml --context $KUBECONTEXT_CLUSTER1
+
+# Allow ingress to reach the chatbot through the mesh
+kubectl apply -f k8s/mesh/ingress-to-chatbot.yaml --context $KUBECONTEXT_CLUSTER1
+
+# Solo UI ingress route (the UI is in kagent namespace)
+kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ui-ingress-route
+  namespace: kagent
+spec:
+  hostnames:
+  - "ui.glootest.com"
+  parentRefs:
+  - name: ingress
+    namespace: agentgateway-system
+  rules:
+  - backendRefs:
+    - name: solo-enterprise-ui
+      port: 80
+    matches:
+    - path:
+        type: PathPrefix
+        value: /
+EOF
+
+# Wait for ingress
+kubectl rollout status deploy/ingress -n agentgateway-system --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
+```
+
+### 6.4 Open the Enrollment Chatbot
 
 **Get the ingress address and configure `/etc/hosts`:**
 
@@ -1441,7 +1528,7 @@ Open http://enroll.glootest.com
 > ```
 > Open http://localhost:8501
 
-### 6.4 Run the Demo Scenario
+### 6.5 Run the Demo Scenario
 
 **Step 1: Ask about enrollment progress**
 
@@ -1470,7 +1557,7 @@ Expected: The chatbot references GPA (3.42), competency units earned (89), and r
 
 Expected: The request is **blocked** by the agent gateway guardrail. The chat shows a 422 error — PII detected. The SSN never reaches the LLM provider.
 
-### 6.5 Demo UI — ABAC Simulation
+### 6.6 Demo UI — ABAC Simulation
 
 The enrollment chatbot has an ABAC simulation toggle in the sidebar. If the ABAC ext-authz server from Section 5 is still deployed, you can walk through all four scenarios interactively:
 
@@ -1487,7 +1574,7 @@ The enrollment chatbot has an ABAC simulation toggle in the sidebar. If the ABAC
 | Unauthorized model | enrollment-advisor | standard | gpt-4o | 403 — model not authorized |
 | Premium tier | analytics-agent | premium | gpt-4o | 200 — chatbot responds |
 
-### 6.6 Observe the Full Chain
+### 6.7 Observe the Full Chain
 
 **Gloo UI (traces):**
 
@@ -1513,7 +1600,7 @@ kubectl logs -n agentgateway-system -l app.kubernetes.io/name=agentgateway-proxy
   --context $KUBECONTEXT_CLUSTER1 --tail=10
 ```
 
-### 6.7 The Complete Picture
+### 6.8 The Complete Picture
 
 At this point, a single student chat message has been:
 
@@ -1535,7 +1622,7 @@ Every hop has cryptographic identity verification. Every hop is logged. Every ho
 
 > **For leadership:** This section describes what building the same enrollment chatbot scenario would require using only native AWS services. Nothing here is built — this is a reference for the "why not just use AWS?" conversation.
 
-### 6.1 Side-by-Side Comparison
+### 7.1 Side-by-Side Comparison
 
 | Capability | With Solo | Without Solo (AWS Native) | Complexity Delta |
 |---|---|---|---|
@@ -1549,7 +1636,7 @@ Every hop has cryptographic identity verification. Every hop is logged. Every ho
 | **Audit trail for compliance** | Mesh access logs + gateway logs — unified. Cryptographic identity at every hop. Query from one system. | CloudTrail (API calls) + Config Rules (resource compliance) + VPC Flow Logs (network) + custom aggregation Lambda + manual report generation from multiple sources | Manual aggregation across 4+ systems. No cryptographic service identity. Auditor gets spreadsheets, not live dashboards. |
 | **Agent-to-service governance** | Same mesh policies apply to agents. Agent gateway adds LLM-specific governance. One governance plane. | No native equivalent. Custom build: IAM roles per agent + custom middleware for LLM governance + manual audit trail stitching + no visibility into agent-to-agent communication | Entirely greenfield custom development. No AWS service addresses this use case. |
 
-### 6.2 The Same Request, Without Solo
+### 7.2 The Same Request, Without Solo
 
 Tracing the same enrollment chatbot request through AWS-native services:
 
@@ -1584,7 +1671,7 @@ Tracing the same enrollment chatbot request through AWS-native services:
 - **Cross-region access** (if Neptune is in us-east-1 and the caller is in us-west-2): Transit Gateway or VPC peering + cross-region DNS resolution + NAT considerations
 - **No unified audit trail**: CloudTrail logs the Neptune API call, but it's in a different log stream from the API Gateway access log, the Lambda execution log, and the Comprehend PII detection log. Correlating a single student request across all four systems requires custom log aggregation.
 
-### 6.3 WGU-Specific Pain Points
+### 7.3 WGU-Specific Pain Points
 
 These are real issues from WGU's environment. Each one is eliminated by the mesh.
 
