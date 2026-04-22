@@ -45,6 +45,10 @@ Student Browser
 
 ![Multi-Cluster Failover — cross-cluster routing](images/multi-cluster-failover-1.png)
 
+## Workshops
+
+- [**Full Workshop**](workshop.md) — 7-section walkthrough covering mesh security, guardrails, observability, function calling, and BYO ABAC ext-authz
+
 ## Prerequisites
 
 - Two Kubernetes clusters (`cluster1`, `cluster2` contexts)
@@ -52,6 +56,10 @@ Student Browser
 - OpenAI API key
 
 ## Quick Start
+
+We recommend working through the [workshop](workshop.md) first — it walks through the architecture, mesh security, guardrails, and observability step by step.
+
+Once you've completed the workshop and want to stand up the full environment quickly, the install script automates everything:
 
 ```bash
 export SOLO_TRIAL_LICENSE_KEY=<key>
@@ -156,10 +164,6 @@ cd services/data-product-api && PYTHONPATH=. pytest tests/ -v
 ├── workshop.md                 # 6-section workshop document
 └── workshop-byo-abac-ext-authz.md  # ABAC ext-authz workshop
 ```
-
-## Workshops
-
-- **`workshop.md`** — Full 7-section walkthrough covering mesh security, guardrails, observability, function calling, and BYO ABAC ext-authz
 
 ## Version Requirements
 
