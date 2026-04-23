@@ -423,12 +423,8 @@ Repeat the same steps for cluster 2, replacing `$KUBECONTEXT_CLUSTER1` with `$KU
 ```bash
 kubectl create namespace istio-system --context $KUBECONTEXT_CLUSTER2
 
-kubectl create secret generic cacerts -n istio-system \
-  --from-file=ca-cert.pem=root-cert.pem \
-  --from-file=ca-key.pem=root-key.pem \
-  --from-file=root-cert.pem=root-cert.pem \
-  --from-file=cert-chain.pem=root-cert.pem \
-  --context $KUBECONTEXT_CLUSTER2
+# Apply the same shared root trust secret generated in Section 2.1
+kubectl apply -f shared-root-trust-secret.yaml --context $KUBECONTEXT_CLUSTER2
 
 helm upgrade --kube-context $KUBECONTEXT_CLUSTER2 --install istio-base \
   oci://us-docker.pkg.dev/soloio-img/istio-helm/base \
@@ -754,6 +750,10 @@ spec:
   deployment:
     spec:
       replicas: 1
+      template:
+        metadata:
+          labels:
+            istio.io/dataplane-mode: ambient
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -772,7 +772,9 @@ spec:
 EOF
 ```
 
-> **Note:** The agentgateway-proxy uses ClusterIP — it's accessed by the chatbot pod within the cluster, not directly from external clients. The separate **ingress gateway** (deployed in Section 5) handles external LoadBalancer access. This is the same on all platforms including EKS.
+> **Note:** The agentgateway-proxy uses ClusterIP — it's accessed by the chatbot pod within the cluster, not directly from external clients. The separate **ingress gateway** (deployed in Section 7) handles external LoadBalancer access. This is the same on all platforms including EKS.
+>
+> The `istio.io/dataplane-mode: ambient` label on the proxy **pod** (not the namespace) enrolls only the proxy in the ambient mesh. This gives the proxy a SPIFFE identity so it can reach meshed services (like the financial-aid-mcp server in Section 6) through the waypoint. The `agentgateway-system` namespace itself is NOT enrolled — enrolling the whole namespace would break internal traffic like proxy → OTEL collector, proxy → rate limiter, and Prometheus scraping.
 
 **Enable access logs and tracing:**
 
