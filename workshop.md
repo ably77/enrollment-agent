@@ -954,7 +954,7 @@ kubectl label namespace solo-enterprise istio.io/dataplane-mode=ambient \
 
 ```bash
 # Create API key secret (OpenAI)
-kubectl create secret generic openai-secret -n agentgateway-system \
+kubectl create secret generic enrollment-openai-secret -n agentgateway-system \
   --from-literal="Authorization=Bearer $OPENAI_API_KEY" \
   --dry-run=client -oyaml | kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -
 

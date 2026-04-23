@@ -656,7 +656,7 @@ deploy_workloads() {
 
   # --- LLM backend, route, guardrails, rate limits ---
   echo "=== Configuring LLM backend and policies ==="
-  kubectl create secret generic openai-secret -n agentgateway-system \
+  kubectl create secret generic enrollment-openai-secret -n agentgateway-system \
     --from-literal="Authorization=Bearer $OPENAI_API_KEY" \
     --dry-run=client -oyaml | kubectl apply --context $ctx -f -
 

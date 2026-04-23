@@ -61,7 +61,7 @@ cleanup_workloads() {
   kubectl delete gateway ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
   kubectl delete enterpriseagentgatewayparameters ingress-agentgateway-config -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
   kubectl delete enterpriseagentgatewaypolicy --all -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
-  kubectl delete secret openai-secret -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
+  kubectl delete secret enrollment-openai-secret -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 
   echo "--- Deleting WGU demo resources on cluster2 ---"
   kubectl delete -f k8s/services/data-product-api.yaml --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true

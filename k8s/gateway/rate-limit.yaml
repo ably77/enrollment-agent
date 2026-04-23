@@ -27,9 +27,9 @@ metadata:
   namespace: agentgateway-system
 spec:
   targetRefs:
-  - name: agentgateway-proxy
+  - name: wgu-enrollment
     group: gateway.networking.k8s.io
-    kind: Gateway
+    kind: HTTPRoute
   traffic:
     entRateLimit:
       global:

@@ -2,7 +2,7 @@
 # change the provider block and secret.
 #
 # Create the secret first:
-#   kubectl create secret generic openai-secret -n agentgateway-system \
+#   kubectl create secret generic enrollment-openai-secret -n agentgateway-system \
 #     --from-literal="Authorization=Bearer $OPENAI_API_KEY" \
 #     --dry-run=client -oyaml | kubectl apply -f -
 #
@@ -22,4 +22,4 @@ spec:
   policies:
     auth:
       secretRef:
-        name: openai-secret
+        name: enrollment-openai-secret
