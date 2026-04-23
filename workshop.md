@@ -27,6 +27,7 @@ Solo's platform.
    - [2.5 Multi-Cluster Connectivity](#25-multi-cluster-connectivity)
    - [2.6 Deploy Waypoint for L7 Traffic Management](#26-deploy-waypoint-for-l7-traffic-management)
    - [2.7 AuthorizationPolicy — Zero Trust](#27-authorizationpolicy--zero-trust)
+   - [2.8 Cross-Cluster Failover](#28-cross-cluster-failover)
 3. [Agent Gateway & Agent Mesh](#section-3-agent-gateway--agent-mesh)
    - [3.1 Install Enterprise Agentgateway](#31-install-enterprise-agentgateway)
    - [3.2 Install Observability Stack](#32-install-observability-stack)
@@ -525,13 +526,27 @@ kubectl rollout status deploy/graph-db-mock -n wgu-demo --watch --timeout=60s --
 kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
 ```
 
-**Verify services are running:**
+**Deploy the same workloads on cluster 2** (for cross-cluster failover):
+
+```bash
+kubectl apply -f k8s/namespaces.yaml --context $KUBECONTEXT_CLUSTER2
+kubectl apply -f k8s/services/graph-db-mock.yaml --context $KUBECONTEXT_CLUSTER2
+kubectl apply -f k8s/services/data-product-api.yaml --context $KUBECONTEXT_CLUSTER2
+
+kubectl rollout status deploy/graph-db-mock -n wgu-demo --watch --timeout=60s --context $KUBECONTEXT_CLUSTER2
+kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=60s --context $KUBECONTEXT_CLUSTER2
+```
+
+> The service manifests include `solo.io/service-scope: global` and `networking.istio.io/traffic-distribution: PreferNetwork`. These labels tell Istio to make the service discoverable across clusters via `.mesh.internal` DNS and to prefer local endpoints when available — falling back to remote endpoints when local pods are unavailable.
+
+**Verify services are running on both clusters:**
 
 ```bash
 kubectl get pods -n wgu-demo --context $KUBECONTEXT_CLUSTER1
+kubectl get pods -n wgu-demo --context $KUBECONTEXT_CLUSTER2
 ```
 
-Expected: Both pods showing `1/1 Running` (no sidecars — ambient mesh uses ztunnel at the node level).
+Expected: Both pods showing `1/1 Running` on each cluster (no sidecars — ambient mesh uses ztunnel at the node level).
 
 ### 2.4 Verify mTLS Enrollment
 
@@ -610,13 +625,15 @@ kubectl get serviceentry -n istio-system --context $KUBECONTEXT_CLUSTER2
 The waypoint proxy is required for L7 policy enforcement (AuthorizationPolicy with `targetRefs`). Deploy it before applying authorization policies so the ALLOW rules have an enforcement point.
 
 ```bash
+# Cluster 1
 kubectl apply -f k8s/mesh/waypoint.yaml --context $KUBECONTEXT_CLUSTER1
-
-# Enable waypoint for the namespace
 kubectl label namespace wgu-demo istio.io/use-waypoint=wgu-demo-waypoint --context $KUBECONTEXT_CLUSTER1
-
-# Wait for waypoint
 kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
+
+# Cluster 2
+kubectl apply -f k8s/mesh/waypoint.yaml --context $KUBECONTEXT_CLUSTER2
+kubectl label namespace wgu-demo istio.io/use-waypoint=wgu-demo-waypoint --context $KUBECONTEXT_CLUSTER2
+kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=60s --context $KUBECONTEXT_CLUSTER2
 ```
 
 ### 2.7 AuthorizationPolicy — Zero Trust
@@ -624,15 +641,17 @@ kubectl rollout status deploy/wgu-demo-waypoint -n wgu-demo --watch --timeout=60
 Apply the deny-all baseline, explicit allow policies, and the waypoint L4 allow:
 
 ```bash
-# Deny all by default
-kubectl apply -f k8s/mesh/deny-all.yaml --context $KUBECONTEXT_CLUSTER1
-
-# Allow only the paths needed for the enrollment scenario
-kubectl apply -f k8s/mesh/chatbot-to-data-product.yaml --context $KUBECONTEXT_CLUSTER1
-kubectl apply -f k8s/mesh/data-product-to-graphdb.yaml --context $KUBECONTEXT_CLUSTER1
-
-# Allow the waypoint's second hop through ztunnel (L4)
-kubectl apply -f k8s/mesh/waypoint-to-backends.yaml --context $KUBECONTEXT_CLUSTER1
+# Apply policies on both clusters
+for CTX in $KUBECONTEXT_CLUSTER1 $KUBECONTEXT_CLUSTER2; do
+  echo "--- Applying policies to $CTX ---"
+  # Deny all by default
+  kubectl apply -f k8s/mesh/deny-all.yaml --context $CTX
+  # Allow only the paths needed for the enrollment scenario
+  kubectl apply -f k8s/mesh/chatbot-to-data-product.yaml --context $CTX
+  kubectl apply -f k8s/mesh/data-product-to-graphdb.yaml --context $CTX
+  # Allow the waypoint's second hop through ztunnel (L4)
+  kubectl apply -f k8s/mesh/waypoint-to-backends.yaml --context $CTX
+done
 ```
 
 > **Note on waypoint + AuthorizationPolicy:** The ALLOW policies use `targetRefs` for L7 enforcement at the waypoint — they check the real caller identity. But the waypoint makes a second HBONE connection to the destination pod, presenting its own identity at L4. The `waypoint-to-backends` policy allows this second hop through ztunnel. Both the L7 caller check AND the L4 waypoint allow are needed.
@@ -672,6 +691,47 @@ echo ""
 echo "=== Waypoint ==="
 kubectl get gateway -n wgu-demo --context $KUBECONTEXT_CLUSTER1
 ```
+
+### 2.8 Cross-Cluster Failover
+
+The backend service manifests include two key annotations that enable automatic cross-cluster failover:
+
+- `solo.io/service-scope: global` — makes the service discoverable across clusters via `.mesh.internal` DNS (e.g., `data-product-api.wgu-demo.mesh.internal`)
+- `networking.istio.io/traffic-distribution: PreferNetwork` — routes to local endpoints when available, falls back to remote endpoints when local pods are unavailable
+
+Any client using the `.mesh.internal` hostname gets failover automatically. Clients using `.svc.cluster.local` only see local endpoints.
+
+**Test failover:**
+
+```bash
+# Scale down data-product-api on cluster 1
+kubectl scale deploy/data-product-api -n wgu-demo --replicas=0 --context $KUBECONTEXT_CLUSTER1
+
+# Verify 0 local pods
+kubectl get pods -n wgu-demo -l app=data-product-api --context $KUBECONTEXT_CLUSTER1
+# Expected: No resources found
+
+# Test using the mesh.internal hostname — should failover to cluster 2
+kubectl exec deploy/data-product-api -n wgu-demo --context $KUBECONTEXT_CLUSTER2 -- \
+  echo "cluster2 data-product-api is running"
+
+kubectl run failover-test --image=curlimages/curl --rm -it --restart=Never \
+  -n wgu-demo-frontend --context $KUBECONTEXT_CLUSTER1 -- \
+  curl -s http://data-product-api.wgu-demo.mesh.internal:8080/health
+```
+
+Expected: `{"status":"healthy"}` — the request was served by cluster 2.
+
+> **For leadership:** One annotation change gives you multi-region resilience. If the us-west-2 data product API goes down, requests automatically fail over to us-east-2. No custom health checks, no Route 53 failover routing, no application code changes.
+
+**Restore the deployment:**
+
+```bash
+kubectl scale deploy/data-product-api -n wgu-demo --replicas=1 --context $KUBECONTEXT_CLUSTER1
+kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
+```
+
+With `PreferNetwork`, traffic automatically shifts back to local endpoints once cluster 1's pod is healthy again.
 
 ---
 
