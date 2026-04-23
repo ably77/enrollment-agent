@@ -21,10 +21,8 @@ spec:
             builtins:
             - CreditCard
             - Ssn
-            - Email
-            - PhoneNumber
           response:
-            message: "Request blocked: personally identifiable information (PII) detected. Do not include SSNs, credit cards, emails, or phone numbers in prompts. This policy enforces FERPA compliance."
+            message: "Request blocked: personally identifiable information (PII) detected. Do not include SSNs or credit card numbers in prompts. This policy enforces FERPA compliance."
             statusCode: 422
         # Prompt Injection Protection
         - regex:

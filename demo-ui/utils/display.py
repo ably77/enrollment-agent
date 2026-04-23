@@ -17,6 +17,33 @@ def render_tool_call(function_name: str, arguments: dict, result: dict):
         st.json(result)
 
 
+def render_tool_call_with_type(
+    function_name: str,
+    arguments: dict,
+    result: dict,
+    tool_type: str = "function",
+    gateway_path: str = "",
+):
+    """Render a tool call with a protocol type badge.
+
+    tool_type: "function" for OpenAI function calling, "mcp" for MCP tools.
+    """
+    if tool_type == "mcp":
+        badge = ":green[MCP Tool]"
+        icon = ":material/cable:"
+    else:
+        badge = ":blue[Function Call]"
+        icon = ":material/function:"
+
+    with st.expander(f"{icon} {badge}  **{function_name}**", expanded=False):
+        if gateway_path:
+            st.caption(f"Gateway path: `{gateway_path}`")
+        st.markdown("**Arguments:**")
+        st.json(arguments)
+        st.markdown("**Result:**")
+        st.json(result)
+
+
 def render_error(status_code: int, body: dict):
     """Render an error response."""
     if status_code == 0:

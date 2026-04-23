@@ -66,6 +66,7 @@ cleanup_workloads() {
   echo "--- Deleting WGU demo resources on cluster2 ---"
   kubectl delete -f k8s/services/data-product-api.yaml --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
   kubectl delete -f k8s/services/graph-db-mock.yaml --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
+  kubectl delete -f k8s/services/financial-aid-mcp.yaml --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
   kubectl delete -f k8s/mesh/ --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
 
   echo "--- Deleting demo namespaces ---"

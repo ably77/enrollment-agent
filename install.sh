@@ -464,6 +464,10 @@ spec:
   deployment:
     spec:
       replicas: 1
+      template:
+        metadata:
+          labels:
+            istio.io/dataplane-mode: ambient
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -645,8 +649,10 @@ deploy_workloads() {
   kubectl apply -f k8s/namespaces.yaml --context $ctx
   kubectl apply -f k8s/services/graph-db-mock.yaml --context $ctx
   kubectl apply -f k8s/services/data-product-api.yaml --context $ctx
+  kubectl apply -f k8s/services/financial-aid-mcp.yaml --context $ctx
   kubectl rollout status deploy/graph-db-mock -n wgu-demo --watch --timeout=120s --context $ctx
   kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=120s --context $ctx
+  kubectl rollout status deploy/financial-aid-mcp -n wgu-demo --watch --timeout=120s --context $ctx
 
   # --- Mesh policies and waypoint ---
   echo "=== Applying mesh policies ==="
@@ -662,7 +668,7 @@ deploy_workloads() {
 
   kubectl apply -f k8s/gateway/backend.yaml -f k8s/gateway/route.yaml \
     -f k8s/gateway/guardrails.yaml -f k8s/gateway/rate-limit.yaml \
-    -f k8s/gateway/abac-ext-authz.yaml \
+    -f k8s/gateway/abac-ext-authz.yaml -f k8s/gateway/mcp-backend.yaml \
     --context $ctx
 
   kubectl rollout status deploy/abac-ext-authz -n agentgateway-system --watch --timeout=60s --context $ctx
@@ -762,8 +768,10 @@ deploy_workloads_cluster2() {
   kubectl apply -f k8s/namespaces.yaml --context $ctx
   kubectl apply -f k8s/services/graph-db-mock.yaml --context $ctx
   kubectl apply -f k8s/services/data-product-api.yaml --context $ctx
+  kubectl apply -f k8s/services/financial-aid-mcp.yaml --context $ctx
   kubectl rollout status deploy/graph-db-mock -n wgu-demo --watch --timeout=120s --context $ctx
   kubectl rollout status deploy/data-product-api -n wgu-demo --watch --timeout=120s --context $ctx
+  kubectl rollout status deploy/financial-aid-mcp -n wgu-demo --watch --timeout=120s --context $ctx
 
   echo "=== Applying mesh policies on cluster2 ==="
   kubectl apply -f k8s/mesh/ --context $ctx
@@ -803,7 +811,7 @@ configure_global_services() {
   # The manifest already has the global label and annotation for cluster1.
   # Cluster2's apply also picks them up, but label/annotate explicitly
   # in case the manifest was applied before the labels were added.
-  for svc in data-product-api graph-db-mock; do
+  for svc in data-product-api graph-db-mock financial-aid-mcp; do
     kubectl --context $ctx -n wgu-demo \
       label service $svc solo.io/service-scope=global --overwrite
     kubectl --context $ctx -n wgu-demo \

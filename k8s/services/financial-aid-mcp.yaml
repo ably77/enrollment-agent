@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: financial-aid-mcp
+  namespace: wgu-demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: financial-aid-mcp
+  namespace: wgu-demo
+  labels:
+    app: financial-aid-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: financial-aid-mcp
+  template:
+    metadata:
+      labels:
+        app: financial-aid-mcp
+    spec:
+      serviceAccountName: financial-aid-mcp
+      containers:
+      - name: financial-aid-mcp
+        image: ably7/financial-aid-mcp:0.0.2
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8082
+          name: http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: financial-aid-mcp
+  namespace: wgu-demo
+  labels:
+    app: financial-aid-mcp
+spec:
+  selector:
+    app: financial-aid-mcp
+  ports:
+  - name: http
+    port: 8082
+    targetPort: 8082

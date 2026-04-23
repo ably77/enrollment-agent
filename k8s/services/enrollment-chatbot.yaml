@@ -65,7 +65,7 @@ spec:
       serviceAccountName: enrollment-chatbot
       containers:
       - name: enrollment-chatbot
-        image: ably7/enrollment-chatbot:0.1.5
+        image: ably7/enrollment-chatbot:0.1.7
         imagePullPolicy: Always
         ports:
         - containerPort: 8501
@@ -91,6 +91,8 @@ spec:
           value: "wgu-demo"
         - name: NS_FRONTEND
           value: "wgu-demo-frontend"
+        - name: MCP_URL
+          value: "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/financial-aid-mcp"
         resources:
           requests:
             cpu: 100m

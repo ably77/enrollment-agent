@@ -9,7 +9,7 @@ import requests
 import streamlit as st
 
 from utils.config import (
-    APP_TITLE, ORG_SHORT, DATA_PRODUCT_URL, STUDENTS, DEFAULT_STUDENT_ID, system_prompt,
+    APP_TITLE, ORG_SHORT, DATA_PRODUCT_URL, MCP_URL, STUDENTS, DEFAULT_STUDENT_ID, system_prompt,
 )
 
 st.set_page_config(
@@ -20,7 +20,8 @@ st.set_page_config(
 
 from utils.sidebar import render_sidebar
 from utils.gateway import chat_completion
-from utils.display import render_tool_call, render_error
+from utils.display import render_tool_call_with_type, render_error
+from utils.mcp_client import discover_mcp_tools, call_mcp_tool
 from utils.kubectl import run_kubectl
 
 render_sidebar()
@@ -180,6 +181,16 @@ TOOLS = [
     }
 ]
 
+# --- MCP tool discovery ---
+if "mcp_tools" not in st.session_state:
+    st.session_state["mcp_tools"] = discover_mcp_tools(MCP_URL)
+    st.session_state["mcp_tool_names"] = {
+        t["function"]["name"] for t in st.session_state["mcp_tools"]
+    }
+
+MCP_TOOL_NAMES = st.session_state.get("mcp_tool_names", set())
+ALL_TOOLS = TOOLS + st.session_state.get("mcp_tools", [])
+
 
 def call_data_product_api(student_id: str) -> dict:
     """Call the data product API through the mesh."""
@@ -200,9 +211,13 @@ def process_tool_calls(tool_calls: list[dict], messages: list[dict]) -> list[dic
 
         if fn_name == "get_student_data":
             result = call_data_product_api(fn_args["student_id"])
-            render_tool_call(fn_name, fn_args, result)
+            render_tool_call_with_type(fn_name, fn_args, result, tool_type="function", gateway_path="/openai")
+        elif fn_name in MCP_TOOL_NAMES:
+            result = call_mcp_tool(MCP_URL, fn_name, fn_args)
+            render_tool_call_with_type(fn_name, fn_args, result, tool_type="mcp", gateway_path="/financial-aid-mcp")
         else:
             result = {"error": f"Unknown function: {fn_name}"}
+            render_tool_call_with_type(fn_name, fn_args, result, tool_type="function")
 
         messages.append({
             "role": "assistant",
@@ -246,7 +261,7 @@ if prompt := st.chat_input("Ask about your enrollment, courses, or academic prog
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             _model, _extra = _get_abac_config()
-            status, body = chat_completion(api_messages, model=_model, tools=TOOLS, extra_headers=_extra)
+            status, body = chat_completion(api_messages, model=_model, tools=ALL_TOOLS, extra_headers=_extra)
 
         if status != 200:
             render_error(status, body)
@@ -261,7 +276,7 @@ if prompt := st.chat_input("Ask about your enrollment, courses, or academic prog
 
                 # Second LLM call with tool results
                 with st.spinner("Analyzing your data..."):
-                    status2, body2 = chat_completion(api_messages, model=_model, tools=TOOLS, extra_headers=_extra)
+                    status2, body2 = chat_completion(api_messages, model=_model, tools=ALL_TOOLS, extra_headers=_extra)
 
                 if status2 != 200:
                     render_error(status2, body2)
@@ -281,19 +296,41 @@ with st.sidebar:
     st.divider()
     st.markdown("**Request Chain**")
     st.caption("Student :material/arrow_forward: Chatbot")
-    st.caption("  :material/arrow_forward: Agent Gateway (guardrails, tokens)")
+    st.caption("  :material/arrow_forward: Agent Gateway `/openai` (guardrails, tokens)")
     st.caption("  :material/arrow_forward: LLM Provider")
-    st.caption("  :material/arrow_forward: Data Product API (via mesh)")
-    st.caption("  :material/arrow_forward: Graph DB (Neptune mock)")
+    st.caption("  :blue[Function Call] Data Product API (via mesh)")
+    st.caption("  :green[MCP Tool] Agent Gateway `/financial-aid-mcp`")
+    st.caption("  :material/arrow_forward: Financial Aid MCP Server (via mesh)")
+
+    # MCP status
+    st.divider()
+    st.markdown("**MCP Status**")
+    mcp_tools = st.session_state.get("mcp_tools", [])
+    if mcp_tools:
+        st.success(f"Connected — {len(mcp_tools)} tools discovered")
+        for t in mcp_tools:
+            st.caption(f":material/build: {t['function']['name']}")
+    else:
+        st.warning("MCP server unavailable — financial aid tools disabled")
 
     st.divider()
-    st.markdown("**Valid Prompts** (will trigger student data lookup)")
+    st.markdown("**Valid Prompts**")
     st.markdown(
-        "- *What courses do I have left for my BS in Computer Science?*\n"
+        "**Academic** :blue[Function Call]\n"
+        "- *What courses do I have left?*\n"
         "- *What's my current GPA?*\n"
-        "- *How many competency units do I still need?*\n"
-        "- *Which courses am I currently taking?*\n"
         "- *Tell me about my academic progress*\n"
+    )
+    st.markdown(
+        "**Financial** :green[MCP Tool]\n"
+        "- *What's my tuition balance?*\n"
+        "- *What scholarships am I eligible for?*\n"
+        "- *Show me my payment history*\n"
+    )
+    st.markdown(
+        "**Combined** :blue[Function Call] + :green[MCP Tool]\n"
+        "- *Can I afford to take extra courses next term?*\n"
+        "- *What does my academic and financial picture look like?*\n"
     )
     st.markdown("**Guardrail Triggers** (blocked by the agent gateway)")
     st.markdown(

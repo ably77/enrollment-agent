@@ -47,19 +47,28 @@ Solo's platform.
    - [5.5 Test ABAC Enforcement](#55-test-abac-enforcement)
    - [5.6 View ext-authz Logs](#56-view-ext-authz-logs)
    - [5.7 ABAC Cleanup](#57-abac-cleanup)
-6. [The Home Run — End-to-End Enrollment Scenario](#section-6-the-home-run--end-to-end-enrollment-scenario)
-   - [6.1 Deploy the Enrollment Chatbot](#61-deploy-the-enrollment-chatbot)
-   - [6.2 Verify Mesh Enrollment](#62-verify-mesh-enrollment)
-   - [6.3 Deploy the Ingress Gateway](#63-deploy-the-ingress-gateway)
-   - [6.4 Open the Enrollment Chatbot](#64-open-the-enrollment-chatbot)
-   - [6.5 Run the Demo Scenario](#65-run-the-demo-scenario)
-   - [6.6 Demo UI — ABAC Simulation](#66-demo-ui--abac-simulation)
-   - [6.7 Observe the Full Chain](#67-observe-the-full-chain)
-   - [6.8 The Complete Picture](#68-the-complete-picture)
-7. [Without Solo — The AWS-Native Alternative](#section-7-without-solo--the-aws-native-alternative)
-   - [7.1 Side-by-Side Comparison](#71-side-by-side-comparison)
-   - [7.2 The Same Request, Without Solo](#72-the-same-request-without-solo)
-8. [Cleanup](#cleanup)
+6. [MCP Integration — Financial Aid Service](#section-6-mcp-integration--financial-aid-service)
+   - [6.1 Overview](#61-overview)
+   - [6.2 Deploy the Financial Aid MCP Server](#62-deploy-the-financial-aid-mcp-server)
+   - [6.3 Configure Agent Gateway MCP Backend](#63-configure-agent-gateway-mcp-backend)
+   - [6.4 Apply Mesh Policy](#64-apply-mesh-policy)
+   - [6.5 Validate with MCP Inspector](#65-validate-with-mcp-inspector)
+   - [6.6 View MCP Metrics and Traces](#66-view-mcp-metrics-and-traces)
+   - [6.7 Demo Scenarios](#67-demo-scenarios)
+   - [6.8 Key Takeaways](#68-key-takeaways)
+7. [The Home Run — End-to-End Enrollment Scenario](#section-7-the-home-run--end-to-end-enrollment-scenario)
+   - [7.1 Deploy the Enrollment Chatbot](#71-deploy-the-enrollment-chatbot)
+   - [7.2 Verify Mesh Enrollment](#72-verify-mesh-enrollment)
+   - [7.3 Deploy the Ingress Gateway](#73-deploy-the-ingress-gateway)
+   - [7.4 Open the Enrollment Chatbot](#74-open-the-enrollment-chatbot)
+   - [7.5 Run the Demo Scenario](#75-run-the-demo-scenario)
+   - [7.6 Demo UI — ABAC Simulation](#76-demo-ui--abac-simulation)
+   - [7.7 Observe the Full Chain](#77-observe-the-full-chain)
+   - [7.8 The Complete Picture](#78-the-complete-picture)
+8. [Without Solo — The AWS-Native Alternative](#section-8-without-solo--the-aws-native-alternative)
+   - [8.1 Side-by-Side Comparison](#81-side-by-side-comparison)
+   - [8.2 The Same Request, Without Solo](#82-the-same-request-without-solo)
+9. [Cleanup](#cleanup)
 
 ---
 
@@ -1519,11 +1528,164 @@ Each log line shows the HTTP method, path, ABAC header values, and the ALLOWED/D
 
 ---
 
-## Section 6: The Home Run — End-to-End Enrollment Scenario
+## Section 6: MCP Integration — Financial Aid Service
+
+> **For leadership:** The Model Context Protocol (MCP) is an open standard that lets LLM agents discover and call tools dynamically, without hardcoded function definitions. Routing MCP traffic through the agent gateway gives you the same centralized governance — guardrails, rate limiting, observability, access logging — that you have for direct LLM calls. One control plane for all AI traffic, regardless of protocol.
+
+### 6.1 Overview
+
+The enrollment demo has two data paths:
+
+| Path | Protocol | Data | Existing? |
+|---|---|---|---|
+| Chatbot → Agent Gateway → LLM → Data Product API | OpenAI function calling | Academic records (courses, GPA, units) | Yes — Sections 2–5 |
+| Chatbot → Agent Gateway → Financial Aid MCP Server | MCP (StreamableHTTP) | Financial aid, tuition balance, payments | New — this section |
+
+Both paths share the same agent gateway instance. MCP requests are routed to `/financial-aid-mcp` while LLM requests go to `/openai`. The guardrails, rate limiting, and observability policies you configured in earlier sections apply automatically to both.
+
+MCP tools are discovered dynamically — the chatbot calls `tools/list` when it starts, and the LLM uses whatever tools are returned. There is no list of hardcoded tool definitions in the chatbot code.
+
+### 6.2 Deploy the Financial Aid MCP Server
+
+The financial aid MCP server is a FastAPI service that exposes three tools over the MCP StreamableHTTP transport: `get_financial_summary`, `get_payment_history`, and `check_scholarship_eligibility`.
+
+```bash
+kubectl apply -f k8s/services/financial-aid-mcp.yaml --context $KUBECONTEXT_CLUSTER1
+kubectl rollout status deploy/financial-aid-mcp -n wgu-demo --watch --timeout=120s --context $KUBECONTEXT_CLUSTER1
+```
+
+**Verify the server is running:**
+
+```bash
+kubectl get pods -n wgu-demo -l app=financial-aid-mcp --context $KUBECONTEXT_CLUSTER1
+```
+
+Expected: `1/1 Running`. The MCP server is now in the `wgu-demo` namespace, enrolled in the ambient mesh — it will have mTLS between it and the chatbot automatically.
+
+### 6.3 Configure Agent Gateway MCP Backend
+
+Apply the MCP backend and route. The key difference from the LLM backend is `spec.mcp` (not `spec.ai`) and `protocol: StreamableHTTP`:
+
+```bash
+kubectl apply -f k8s/gateway/mcp-backend.yaml --context $KUBECONTEXT_CLUSTER1
+```
+
+**What the config does:**
+
+- `spec.mcp` — tells the agent gateway to handle this as an MCP backend, not an LLM backend
+- `protocol: StreamableHTTP` — the transport used by the financial aid MCP server
+- Path prefix `/financial-aid-mcp` — routes MCP Inspector and chatbot tool calls to this backend
+
+**Verify the backend and route are accepted:**
+
+```bash
+kubectl get agentbackend financial-aid-mcp-backend -n agentgateway-system --context $KUBECONTEXT_CLUSTER1
+kubectl get httproute financial-aid-mcp-route -n agentgateway-system --context $KUBECONTEXT_CLUSTER1
+```
+
+Expected: Both resources show `Accepted` status.
+
+### 6.4 Apply Mesh Policy
+
+The deny-all policy from Section 2 blocks all traffic by default. Apply the AuthorizationPolicy allowing the agent gateway proxy's service account to reach the MCP server:
+
+```bash
+kubectl apply -f k8s/mesh/gateway-to-financial-aid.yaml --context $KUBECONTEXT_CLUSTER1
+```
+
+**Verify the policy is in place:**
+
+```bash
+kubectl get authorizationpolicy gateway-to-financial-aid -n wgu-demo --context $KUBECONTEXT_CLUSTER1
+```
+
+> **Note:** Like the other L7 policies in the mesh, this policy uses `targetRefs` pointing to the `financial-aid-mcp` Service, not a pod `selector`. The waypoint enforces it and checks the real caller identity (the agent gateway proxy's service account). The chatbot cannot reach the MCP server directly — it must go through the gateway.
+
+### 6.5 Validate with MCP Inspector
+
+MCP Inspector is a browser-based tool for testing MCP servers. Use it to confirm the financial aid tools are reachable through the gateway before testing in the chatbot.
+
+Make sure the port-forward from Section 3.3 is still running, then launch the inspector:
+
+```bash
+npx @modelcontextprotocol/inspector@0.21.1
+```
+
+Open the inspector UI in your browser and connect with:
+
+- **Transport**: Streamable HTTP
+- **URL**: `http://localhost:8080/financial-aid-mcp`
+
+**List tools** — click "List Tools". You should see:
+
+| Tool | Description |
+|---|---|
+| `get_financial_summary` | Current aid award, tuition balance, and payment plan |
+| `get_payment_history` | List of payments and upcoming due dates |
+| `check_scholarship_eligibility` | Evaluate eligibility for merit and need-based scholarships |
+
+**Test a tool call** — select `get_financial_summary`, set `student_id` to `WGU_2024_00142`, and run it. You should see Jordan Rivera's financial data: aid awarded, tuition balance, and payment plan details.
+
+> **Note:** The inspector talks directly to the gateway (`localhost:8080`). The gateway enforces guardrails on this traffic the same way it does for LLM calls — try passing an SSN as the student ID to confirm the PII guardrail fires.
+
+### 6.6 View MCP Metrics and Traces
+
+**Check access logs for MCP-specific fields:**
+
+```bash
+kubectl logs -n agentgateway-system -l app.kubernetes.io/name=agentgateway-proxy --prefix --tail 20 --context $KUBECONTEXT_CLUSTER1
+```
+
+Look for these fields in the log output after running an MCP tool call:
+
+| Field | Value | Meaning |
+|---|---|---|
+| `mcp.method` | `tools/call` | The MCP JSON-RPC method |
+| `mcp.resource` | `financial-aid-mcp` | The MCP server being called |
+| `mcp.target` | `financial-aid-mcp-target` | The backend target name |
+
+**View traces in the Gloo UI:**
+
+Open http://ui.glootest.com. MCP tool calls appear as separate spans in the trace view alongside LLM call spans — you can see both protocols flowing through the same gateway in a single request trace when the LLM uses the MCP tool.
+
+> **For leadership:** Token counts, latency, and guardrail results are recorded for MCP tool calls exactly as they are for LLM calls. One audit trail for all AI traffic — function calling, MCP, and direct LLM requests.
+
+### 6.7 Demo Scenarios
+
+Run these scenarios in the enrollment chatbot (deployed in Section 7). They demonstrate both data paths operating together.
+
+**Scenario 1: Academic Data (Function Calling)**
+
+> "Tell me about Jordan Rivera's academic progress"
+
+Watch for the blue **[Function Call]** badge in the chat. The LLM calls `get_student_data` via OpenAI function calling, which goes through the data product API over the mesh. The response includes courses, GPA, and competency unit counts from the graph DB.
+
+**Scenario 2: Financial Data (MCP)**
+
+> "What's Jordan's tuition balance and payment plan?"
+
+Watch for the green **[MCP Tool]** badge. The LLM calls `get_financial_summary` via MCP — the request routes to `/financial-aid-mcp` through the agent gateway, hits the financial aid MCP server in `wgu-demo`, and returns Jordan's balance and payment schedule.
+
+**Scenario 3: Combined**
+
+> "Jordan wants to know if they can afford to take extra courses next term. What does their academic and financial picture look like?"
+
+You should see **both** badges — **[Function Call]** and **[MCP Tool]** — in the same response. The LLM synthesizes academic standing (courses remaining, GPA) with financial data (balance, aid remaining) to give a complete picture. Both calls flow through the agent gateway and are logged, traced, and governed by the same policies.
+
+### 6.8 Key Takeaways
+
+- The agent gateway governs both LLM traffic (`/openai`) and MCP traffic (`/financial-aid-mcp`) through a single control plane — one set of guardrail, rate limit, and observability policies covers all AI protocols
+- Guardrails (PII detection, prompt injection), rate limiting, and access logging apply to MCP tool calls automatically — no per-protocol configuration needed
+- MCP tools are discovered dynamically — the chatbot calls `tools/list` at startup and the LLM decides which tools to invoke, so adding new tools to the MCP server requires no chatbot code changes
+- The mesh provides mTLS between the chatbot and the financial aid MCP server with zero custom security code — the same ambient mesh enrollment that protects the academic data path protects the financial data path
+
+---
+
+## Section 7: The Home Run — End-to-End Enrollment Scenario
 
 > **For leadership:** This is the demo. A student asks an AI enrollment advisor about their courses. The request flows through the agent gateway (guardrails, token counting), to an LLM (function calling), to a data product API (through the mesh, mTLS verified), to a graph database. The entire chain is secured, observable, and governed — with zero custom security code.
 
-### 6.1 Deploy the Enrollment Chatbot
+### 7.1 Deploy the Enrollment Chatbot
 
 ```bash
 # Deploy the chatbot UI
@@ -1546,14 +1708,14 @@ kubectl get pods -n agentgateway-system -l app.kubernetes.io/name=agentgateway-p
 
 Expected: All pods `1/1 Running`.
 
-### 6.2 Verify Mesh Enrollment
+### 7.2 Verify Mesh Enrollment
 
 ```bash
 # All WGU services should show HBONE (mTLS active)
 solo-istioctl ztunnel-config workloads --context $KUBECONTEXT_CLUSTER1 | grep -E "wgu-demo|agentgateway"
 ```
 
-### 6.3 Deploy the Ingress Gateway
+### 7.3 Deploy the Ingress Gateway
 
 Deploy the ingress gateway, routes, and the mesh auth policy that allows the ingress to reach the chatbot:
 
@@ -1592,7 +1754,7 @@ EOF
 kubectl rollout status deploy/ingress -n agentgateway-system --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
 ```
 
-### 6.4 Open the Enrollment Chatbot
+### 7.4 Open the Enrollment Chatbot
 
 **Get the ingress address and configure `/etc/hosts`:**
 
@@ -1624,7 +1786,7 @@ Open http://enroll.glootest.com
 > ```
 > Open http://localhost:8501
 
-### 6.5 Run the Demo Scenario
+### 7.5 Run the Demo Scenario
 
 **Step 1: Ask about enrollment progress**
 
@@ -1653,7 +1815,7 @@ Expected: The chatbot references GPA (3.42), competency units earned (89), and r
 
 Expected: The request is **blocked** by the agent gateway guardrail. The chat shows a 422 error — PII detected. The SSN never reaches the LLM provider.
 
-### 6.6 Demo UI — ABAC Simulation
+### 7.6 Demo UI — ABAC Simulation
 
 The enrollment chatbot has an ABAC simulation toggle in the sidebar. If the ABAC ext-authz server from Section 5 is still deployed, you can walk through all four scenarios interactively:
 
@@ -1670,7 +1832,7 @@ The enrollment chatbot has an ABAC simulation toggle in the sidebar. If the ABAC
 | Unauthorized model | enrollment-advisor | standard | gpt-4o | 403 — model not authorized |
 | Premium tier | analytics-agent | premium | gpt-4o | 200 — chatbot responds |
 
-### 6.7 Observe the Full Chain
+### 7.7 Observe the Full Chain
 
 **Gloo UI (traces):**
 
@@ -1696,7 +1858,7 @@ kubectl logs -n agentgateway-system -l app.kubernetes.io/name=agentgateway-proxy
   --context $KUBECONTEXT_CLUSTER1 --tail=10
 ```
 
-### 6.8 The Complete Picture
+### 7.8 The Complete Picture
 
 At this point, a single student chat message has been:
 
@@ -1714,11 +1876,11 @@ Every hop has cryptographic identity verification. Every hop is logged. Every ho
 
 ---
 
-## Section 7: Without Solo — The AWS-Native Alternative
+## Section 8: Without Solo — The AWS-Native Alternative
 
 > **For leadership:** This section describes what building the same enrollment chatbot scenario would require using only native AWS services. Nothing here is built — this is a reference for the "why not just use AWS?" conversation.
 
-### 7.1 Side-by-Side Comparison
+### 8.1 Side-by-Side Comparison
 
 | Capability | With Solo | Without Solo (AWS Native) | Complexity Delta |
 |---|---|---|---|
@@ -1732,7 +1894,7 @@ Every hop has cryptographic identity verification. Every hop is logged. Every ho
 | **Audit trail for compliance** | Mesh access logs + gateway logs — unified. Cryptographic identity at every hop. Query from one system. | CloudTrail (API calls) + Config Rules (resource compliance) + VPC Flow Logs (network) + custom aggregation Lambda + manual report generation from multiple sources | Manual aggregation across 4+ systems. No cryptographic service identity. Auditor gets spreadsheets, not live dashboards. |
 | **Agent-to-service governance** | Same mesh policies apply to agents. Agent gateway adds LLM-specific governance. One governance plane. | No native equivalent. Custom build: IAM roles per agent + custom middleware for LLM governance + manual audit trail stitching + no visibility into agent-to-agent communication | Entirely greenfield custom development. No AWS service addresses this use case. |
 
-### 7.2 The Same Request, Without Solo
+### 8.2 The Same Request, Without Solo
 
 Tracing the same enrollment chatbot request through AWS-native services:
 

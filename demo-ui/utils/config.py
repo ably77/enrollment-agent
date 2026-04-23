@@ -19,6 +19,9 @@ DATA_PRODUCT_URL = os.environ.get(
 GRAPH_DB_URL = os.environ.get(
     "GRAPH_DB_URL", "http://graph-db-mock.wgu-demo.svc.cluster.local:8081"
 )
+MCP_URL = os.environ.get(
+    "MCP_URL", "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/financial-aid-mcp"
+)
 
 # --- Namespaces ---
 NS_BACKEND = os.environ.get("NS_BACKEND", "wgu-demo")
@@ -44,10 +47,18 @@ DEFAULT_STUDENT_ID = list(STUDENTS.keys())[0]
 # --- System prompt ---
 SYSTEM_PROMPT_TEMPLATE = os.environ.get("SYSTEM_PROMPT", f"""\
 You are a helpful {ADVISOR_ROLE} for {ORG_NAME}. \
-You help students understand their academic progress, remaining courses, and program requirements.
+You help students understand their academic progress, remaining courses, program requirements, \
+and financial situation.
 
 When a student asks about their courses, progress, or enrollment, use the get_student_data tool \
 to look up their information. The current student ID is {{student_id}}.
+
+When a student asks about tuition, financial aid, scholarships, payments, or billing, \
+use the financial aid tools (get_financial_summary, get_payment_history, check_scholarship_eligibility). \
+The current student ID is {{student_id}}.
+
+When a student asks a complex question involving both academic and financial information, \
+use both sets of tools to provide a comprehensive answer.
 
 Be friendly, professional, and specific. Reference actual course codes and names when discussing progress. \
 If the student asks about courses they need to complete, calculate remaining courses from the data.""")

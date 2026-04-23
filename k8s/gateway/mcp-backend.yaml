@@ -1,0 +1,36 @@
+# MCP backend — routes to the financial aid MCP server in the mesh.
+# Uses StreamableHTTP transport (stateless, no session affinity needed).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: financial-aid-mcp-backend
+  namespace: agentgateway-system
+spec:
+  mcp:
+    targets:
+    - name: financial-aid-mcp-target
+      static:
+        host: financial-aid-mcp.wgu-demo.svc.cluster.local
+        port: 8082
+        protocol: StreamableHTTP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: financial-aid-mcp
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /financial-aid-mcp
+    backendRefs:
+    - name: financial-aid-mcp-backend
+      group: agentgateway.dev
+      kind: AgentgatewayBackend
+    timeouts:
+      request: "0s"

@@ -1,0 +1,19 @@
+# The agent gateway proxy can call the financial aid MCP server
+# to proxy MCP tool calls from the chatbot through the gateway.
+# Uses targetRefs (L7 enforcement at the waypoint) to preserve original caller identity.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: gateway-to-financial-aid
+  namespace: wgu-demo
+spec:
+  targetRefs:
+  - kind: Service
+    group: ""
+    name: financial-aid-mcp
+  action: ALLOW
+  rules:
+  - from:
+    - source:
+        principals:
+        - "*/ns/agentgateway-system/sa/agentgateway-proxy"
