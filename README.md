@@ -155,5 +155,5 @@ cd services/data-product-api && PYTHONPATH=. pytest tests/ -v
 | Component | Version |
 |-----------|---------|
 | Istio | 1.29.0+ |
-| Enterprise Agent Gateway | v2.3.0+ (tracing requires 2.3+) |
+| Enterprise Agent Gateway | v2.3.2+ (tracing requires 2.3+) |
 | Gateway API CRDs | Experimental channel (TLSRoute required) |

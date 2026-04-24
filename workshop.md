@@ -796,7 +796,7 @@ With `PreferNetwork`, traffic automatically shifts back to local endpoints once 
 ### 3.1 Install Enterprise Agentgateway
 
 ```bash
-export ENTERPRISE_AGW_VERSION=v2.3.0
+export ENTERPRISE_AGW_VERSION=v2.3.2
 
 # Upgrade Gateway API CRDs to v1.5.0 experimental (required by Enterprise Agentgateway for TLSRoute)
 # First remove the safe-upgrades admission policy that blocks channel changes
