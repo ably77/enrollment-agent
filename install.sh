@@ -17,14 +17,17 @@ export ENTERPRISE_AGW_VERSION=${ENTERPRISE_AGW_VERSION:-v2.3.0}
 export SOLO_MGMT_UI_VERSION=${SOLO_MGMT_UI_VERSION:-0.3.15-nightly-2026-04-20-680d5f97}
 export SOLO_MGMT_UI_OCI_REPO=${SOLO_MGMT_UI_OCI_REPO:-us-docker.pkg.dev/developers-369321/solo-enterprise-public-nonprod}
 
-# --- EKS detection ---
-# Auto-detect if cluster1 is EKS by checking the server URL for ".eks.amazonaws.com"
+# --- Platform detection ---
+# Auto-detect cloud platform: EKS (server URL), GKE (cluster name prefix)
 detect_platform() {
   local ctx=$1
-  local server
-  server=$(kubectl config view -o jsonpath="{.clusters[?(@.name==\"$(kubectl config view -o jsonpath="{.contexts[?(@.name==\"$ctx\")].context.cluster}")\")].cluster.server}" 2>/dev/null)
+  local cluster_name server
+  cluster_name=$(kubectl config view -o jsonpath="{.contexts[?(@.name==\"$ctx\")].context.cluster}" 2>/dev/null)
+  server=$(kubectl config view -o jsonpath="{.clusters[?(@.name==\"$cluster_name\")].cluster.server}" 2>/dev/null)
   if [[ "$server" == *".eks.amazonaws.com"* ]]; then
     echo "eks"
+  elif [[ "$cluster_name" == gke_* ]]; then
+    echo "gke"
   else
     echo ""
   fi
@@ -281,9 +284,35 @@ CNFEOF
       kubectl --context $CTX apply --server-side -f \
         https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
 
+    # GKE requires a ResourceQuota for system-node-critical pods in istio-system
+    local PLATFORM
+    PLATFORM=$(detect_platform "$CTX")
+    local CNI_PLATFORM_SET=""
+    if [ "$PLATFORM" = "gke" ]; then
+      echo "GKE detected — applying ResourceQuota for istio-cni..."
+      kubectl apply --context $CTX -f -<<'GKEOF'
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: gcp-critical-pods
+  namespace: istio-system
+spec:
+  hard:
+    pods: 1000
+  scopeSelector:
+    matchExpressions:
+    - operator: In
+      scopeName: PriorityClass
+      values:
+      - system-node-critical
+GKEOF
+      CNI_PLATFORM_SET="--set global.platform=gke"
+    fi
+
     helm upgrade --kube-context $CTX --install istio-cni \
       oci://us-docker.pkg.dev/soloio-img/istio-helm/cni \
       -n istio-system --version=$ISTIO_VERSION-solo --wait \
+      $CNI_PLATFORM_SET \
       -f -<<EOF
 profile: ambient
 ambient:

@@ -116,6 +116,16 @@ kubectl cluster-info --context cluster2
 > - Node security groups allow outbound internet access (for Helm chart pulls, Docker Hub images)
 > - `dig` or `nslookup` installed (for resolving NLB hostnames to IPs for `/etc/hosts`)
 
+> **GCP/GKE:** GKE context names are prefixed with `gke_` — the install script auto-detects this. Rename your contexts or set the env vars:
+> ```bash
+> kubectl config rename-context <your-gke-cluster1-context> cluster1
+> kubectl config rename-context <your-gke-cluster2-context> cluster2
+> ```
+>
+> **GKE prerequisites:**
+> - Each cluster needs at least 3 nodes with 4 vCPU / 16 GB (e.g., `e2-standard-4`)
+> - GKE requires a `ResourceQuota` for `system-node-critical` pods in `istio-system` and `--set global.platform=gke` on the istio-cni helm install (covered in Sections 2.1 and 2.2)
+
 ### 1.2 CLI Tools
 
 Install the following tools:
@@ -339,7 +349,26 @@ kubectl get crd gateways.gateway.networking.k8s.io --context $KUBECONTEXT_CLUSTE
   kubectl --context $KUBECONTEXT_CLUSTER1 apply --server-side -f \
     https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
 
+# GKE only: ResourceQuota for system-node-critical pods
+# kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'GKEOF'
+# apiVersion: v1
+# kind: ResourceQuota
+# metadata:
+#   name: gcp-critical-pods
+#   namespace: istio-system
+# spec:
+#   hard:
+#     pods: 1000
+#   scopeSelector:
+#     matchExpressions:
+#     - operator: In
+#       scopeName: PriorityClass
+#       values:
+#       - system-node-critical
+# GKEOF
+
 # istio-cni
+# GKE users: uncomment "platform: gke" under global below
 helm upgrade --kube-context $KUBECONTEXT_CLUSTER1 --install istio-cni \
   oci://us-docker.pkg.dev/soloio-img/istio-helm/cni \
   -n istio-system --version=$ISTIO_VERSION-solo \
@@ -351,6 +380,8 @@ excludeNamespaces:
   - istio-system
   - kube-system
 global:
+  # uncomment if using GKE
+  #platform: gke
   hub: us-docker.pkg.dev/soloio-img/istio
   tag: $ISTIO_VERSION-solo
   variant: distroless
@@ -409,6 +440,8 @@ EOF
 
 > **AWS/EKS:** No additional platform settings are needed for Solo Istio 1.29.0 on EKS. The ambient mesh works with the default AWS VPC CNI. If using Calico CNI, see the [Solo docs for EKS CNI compatibility](https://docs.solo.io).
 
+> **GCP/GKE:** GKE requires two extra steps before installing istio-cni: (1) a `ResourceQuota` for `system-node-critical` pods in `istio-system`, and (2) `global.platform: gke` in the istio-cni helm values. Both are included as comments in the code blocks above — uncomment them if running on GKE. The `install.sh` script handles these automatically when it detects a GKE cluster.
+
 **Verify installation:**
 
 ```bash
@@ -438,6 +471,25 @@ kubectl get crd gateways.gateway.networking.k8s.io --context $KUBECONTEXT_CLUSTE
   kubectl --context $KUBECONTEXT_CLUSTER2 apply --server-side -f \
     https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
 
+# GKE only: ResourceQuota for system-node-critical pods
+# kubectl apply --context $KUBECONTEXT_CLUSTER2 -f -<<'GKEOF'
+# apiVersion: v1
+# kind: ResourceQuota
+# metadata:
+#   name: gcp-critical-pods
+#   namespace: istio-system
+# spec:
+#   hard:
+#     pods: 1000
+#   scopeSelector:
+#     matchExpressions:
+#     - operator: In
+#       scopeName: PriorityClass
+#       values:
+#       - system-node-critical
+# GKEOF
+
+# GKE users: uncomment "platform: gke" under global below
 helm upgrade --kube-context $KUBECONTEXT_CLUSTER2 --install istio-cni \
   oci://us-docker.pkg.dev/soloio-img/istio-helm/cni \
   -n istio-system --version=$ISTIO_VERSION-solo \
@@ -449,6 +501,8 @@ excludeNamespaces:
   - istio-system
   - kube-system
 global:
+  # uncomment if using GKE
+  #platform: gke
   hub: us-docker.pkg.dev/soloio-img/istio
   tag: $ISTIO_VERSION-solo
   variant: distroless
