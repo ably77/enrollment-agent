@@ -273,6 +273,11 @@ CNFEOF
       --from-file=cert-chain.pem="$WORK_DIR/cert-chain.pem" \
       --context $CTX --dry-run=client -oyaml | kubectl apply --context $CTX -f -
 
+    # Remove pilot-discovery field manager on the webhook to avoid conflict on reruns
+    # (istiod takes ownership of failurePolicy; helm upgrade then conflicts with it)
+    kubectl delete validatingwebhookconfiguration istiod-default-validator \
+      --context $CTX --ignore-not-found 2>/dev/null || true
+
     helm upgrade --kube-context $CTX --install istio-base \
       oci://us-docker.pkg.dev/soloio-img/istio-helm/base \
       -n istio-system --version $ISTIO_VERSION-solo --create-namespace --wait
@@ -325,6 +330,10 @@ global:
   tag: $ISTIO_VERSION-solo
   variant: distroless
 EOF
+
+    # Same field-manager conflict as istio-base webhook (pilot-discovery adopts failurePolicy)
+    kubectl delete validatingwebhookconfiguration istio-validator-istio-system \
+      --context $CTX --ignore-not-found 2>/dev/null || true
 
     helm upgrade --kube-context $CTX --install istiod \
       oci://us-docker.pkg.dev/soloio-img/istio-helm/istiod \
@@ -542,8 +551,11 @@ EOF
   echo "=== Installing observability stack ==="
 
   # Solo Management UI with both Mesh and AgentGateway product views
+  # Note: kagent namespace is NOT enrolled in ambient mesh namespace-wide.
+  # Enrolling it breaks internal traffic (ui-backend → ClickHouse native protocol on port 9000).
+  # Instead, enroll specific pods (UI + telemetry) for multicluster relay connectivity,
+  # same pattern as agentgateway proxy.
   kubectl create namespace kagent --context $KUBECONTEXT_CLUSTER1 2>/dev/null || true
-  kubectl label namespace kagent istio.io/dataplane-mode=ambient --context $KUBECONTEXT_CLUSTER1 --overwrite
 
   helm upgrade -i management \
     "oci://${SOLO_MGMT_UI_OCI_REPO}/charts/management" \
@@ -577,6 +589,20 @@ EOF
     --context $KUBECONTEXT_CLUSTER1 --overwrite 2>/dev/null || true
   kubectl label svc solo-enterprise-telemetry-gateway -n kagent solo.io/service-scope=global \
     --context $KUBECONTEXT_CLUSTER1 --overwrite 2>/dev/null || true
+
+  # Enroll UI and telemetry pods in ambient mesh (pod-level, not namespace-level)
+  # for multicluster relay connectivity via mesh.internal hostnames.
+  # ClickHouse is excluded — its native binary protocol (port 9000) breaks under ztunnel.
+  for deploy in solo-enterprise-ui; do
+    kubectl patch deploy "$deploy" -n kagent --context $KUBECONTEXT_CLUSTER1 \
+      --type=strategic -p '{"spec":{"template":{"metadata":{"labels":{"istio.io/dataplane-mode":"ambient"}}}}}' \
+      2>/dev/null || true
+  done
+  for sts in solo-enterprise-telemetry-collector; do
+    kubectl patch statefulset "$sts" -n kagent --context $KUBECONTEXT_CLUSTER1 \
+      --type=strategic -p '{"spec":{"template":{"metadata":{"labels":{"istio.io/dataplane-mode":"ambient"}}}}}' \
+      2>/dev/null || true
+  done
 
   # Prometheus + Grafana
   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
