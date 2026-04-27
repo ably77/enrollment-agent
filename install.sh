@@ -521,6 +521,20 @@ EOF
   echo "Waiting for agentgateway proxy..."
   kubectl wait --for=condition=programmed gateway agentgateway-proxy \
     -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=120s
+
+  # Wait for proxy pod to exist before checking readiness (GKE can be slow to create it)
+  echo "Waiting for agentgateway proxy pod to appear..."
+  for i in $(seq 1 30); do
+    if kubectl get pod -l gateway.networking.k8s.io/gateway-name=agentgateway-proxy \
+        -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --no-headers 2>/dev/null | grep -q .; then
+      break
+    fi
+    if [ $i -eq 30 ]; then
+      echo "WARNING: agentgateway proxy pod not found after 60s"
+    fi
+    sleep 2
+  done
+
   kubectl wait --for=condition=ready pod -l gateway.networking.k8s.io/gateway-name=agentgateway-proxy \
     -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --timeout=120s
 
