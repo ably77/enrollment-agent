@@ -1,5 +1,4 @@
 # demo-ui/requirements.txt
 streamlit
 requests
-openai
 mcp[cli]

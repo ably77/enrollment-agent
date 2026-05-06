@@ -2,6 +2,24 @@ import json
 import requests
 import streamlit as st
 
+from utils.kubectl import run_kubectl
+
+
+def get_gateway_ip() -> str:
+    """Auto-discover the Agentgateway proxy LoadBalancer address (cached)."""
+    if "_gateway_ip_auto" in st.session_state:
+        return st.session_state["_gateway_ip_auto"]
+    rc, out, _ = run_kubectl(
+        "kubectl get svc -n agentgateway-system "
+        "--selector=gateway.networking.k8s.io/gateway-name=agentgateway-proxy "
+        "-o jsonpath='{.items[*].status.loadBalancer.ingress[0].ip}"
+        "{.items[*].status.loadBalancer.ingress[0].hostname}'"
+    )
+    ip = out.strip().strip("'") if rc == 0 else ""
+    if ip:
+        st.session_state["_gateway_ip_auto"] = ip
+    return ip
+
 
 def get_gateway_url() -> str:
     """Build the gateway base URL from session state."""
@@ -17,10 +35,12 @@ def chat_completion(
     tools: list[dict] | None = None,
     path: str = "/openai",
     extra_headers: dict | None = None,
-) -> tuple[int, dict]:
+    include_response_headers: bool = False,
+) -> tuple[int, dict] | tuple[int, dict, dict]:
     """Send a chat completion request through the agent gateway.
 
-    Returns (status_code, parsed_json_body).
+    Returns (status_code, parsed_json_body), or
+    (status_code, parsed_json_body, response_headers) if include_response_headers.
     """
     url = f"{get_gateway_url()}{path}"
     payload = {"model": model, "messages": messages}
@@ -36,6 +56,10 @@ def chat_completion(
             body = resp.json()
         except (json.JSONDecodeError, TypeError):
             body = {"error": resp.text}
+        if include_response_headers:
+            return resp.status_code, body, dict(resp.headers)
         return resp.status_code, body
     except requests.RequestException as exc:
+        if include_response_headers:
+            return 0, {"error": str(exc)}, {}
         return 0, {"error": str(exc)}

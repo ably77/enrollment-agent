@@ -65,7 +65,7 @@ spec:
       serviceAccountName: enrollment-chatbot
       containers:
       - name: enrollment-chatbot
-        image: ably7/enrollment-chatbot:0.1.7
+        image: ably7/enrollment-chatbot:0.1.8
         imagePullPolicy: Always
         ports:
         - containerPort: 8501

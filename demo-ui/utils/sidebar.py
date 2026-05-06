@@ -2,6 +2,7 @@ import os
 import streamlit as st
 from utils.theme import inject_theme
 from utils.config import APP_TITLE
+from utils.gateway import get_gateway_ip
 
 
 def render_sidebar():
@@ -9,7 +10,9 @@ def render_sidebar():
     inject_theme()
 
     if "gateway_ip" not in st.session_state:
-        st.session_state["gateway_ip"] = os.environ.get("GATEWAY_IP", "localhost")
+        st.session_state["gateway_ip"] = (
+            get_gateway_ip() or os.environ.get("GATEWAY_IP", "localhost")
+        )
     if "protocol" not in st.session_state:
         st.session_state["protocol"] = os.environ.get("GATEWAY_PROTOCOL", "http")
     if "port" not in st.session_state:
