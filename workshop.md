@@ -963,7 +963,7 @@ kubectl get gateway -n agentgateway-system --context $KUBECONTEXT_CLUSTER1
 
 ```bash
 # Solo Management UI — unified Mesh + AgentGateway views
-export SOLO_MGMT_UI_VERSION=0.3.15-nightly-2026-04-20-680d5f97
+export SOLO_MGMT_UI_VERSION=0.4.1-2026-05-14-main-6fb46ef2
 export SOLO_MGMT_UI_OCI_REPO=us-docker.pkg.dev/developers-369321/solo-enterprise-public-nonprod
 
 kubectl create namespace kagent --context $KUBECONTEXT_CLUSTER1
