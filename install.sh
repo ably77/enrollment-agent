@@ -821,7 +821,7 @@ EOF
       --namespace monitoring --context $ctx \
       --dry-run=client -o yaml | \
     kubectl label --local -f - grafana_dashboard="1" --dry-run=client -o yaml | \
-    kubectl apply --context $ctx -f -
+    kubectl apply --server-side --force-conflicts --context $ctx -f -
   else
     echo "WARNING: Grafana dashboard JSON not found at $DASHBOARD_JSON — skipping dashboard import"
   fi
