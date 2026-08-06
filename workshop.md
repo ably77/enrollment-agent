@@ -819,15 +819,7 @@ helm upgrade -i -n agentgateway-system enterprise-agentgateway \
   --create-namespace \
   --version $ENTERPRISE_AGW_VERSION \
   --set-string licensing.licenseKey=$SOLO_TRIAL_LICENSE_KEY \
-  --kube-context $KUBECONTEXT_CLUSTER1 \
-  -f -<<EOF
-gatewayClassParametersRefs:
-  enterprise-agentgateway:
-    group: enterpriseagentgateway.solo.io
-    kind: EnterpriseAgentgatewayParameters
-    name: agentgateway-config
-    namespace: agentgateway-system
-EOF
+  --kube-context $KUBECONTEXT_CLUSTER1
 ```
 
 **Deploy the gateway with config:**
@@ -908,12 +900,42 @@ spec:
     accessLog:
       attributes:
         add:
-        - name: llm.prompt
-          expression: llm.prompt
-        - name: llm.completion
-          expression: 'llm.completion[0]'
-        - name: llm.streaming
-          expression: llm.streaming
+        # --- Request context
+        - name: request_path
+          expression: request.path
+        - name: status_code
+          expression: string(response.code)
+        # --- Latency breakdown: upstream (LLM) vs gateway processing time
+        - name: llm_duration
+          expression: proxy.upstreamDuration
+        - name: request_proc_duration
+          expression: proxy.requestProcessingDuration
+        - name: response_proc_duration
+          expression: proxy.responseProcessingDuration
+        # --- LLM telemetry (default() keeps the field present on non-LLM routes)
+        - name: provider
+          expression: default(llm.provider, "none")
+        - name: model
+          expression: default(llm.responseModel, "none")
+        - name: prompt_tokens
+          expression: string(default(llm.inputTokens, 0))
+        - name: completion_tokens
+          expression: string(default(llm.outputTokens, 0))
+        - name: total_cost_usd
+          expression: string(default(llm.cost.total, 0.0))
+        - name: llm_streaming
+          expression: default(llm.streaming, false)
+        - name: llm_cached_tokens
+          expression: string(default(llm.cachedInputTokens, 0))
+        - name: llm_reasoning_tokens
+          expression: string(default(llm.reasoningTokens, 0))
+        # --- Identity
+        - name: client_ip
+          expression: source.address
+        - name: user_id
+          expression: default(jwt.sub, "anonymous")
+        - name: jwt_all
+          expression: default(jwt, {})
 EOF
 ```
 
@@ -941,10 +963,22 @@ spec:
       randomSampling: "true"
       attributes:
         add:
-        - name: jwt
-          expression: jwt
-        - name: response.body
-          expression: json(response.body)
+        # --- Identity: subject of the verified JWT if a JWT policy is enabled
+        - name: enduser.id
+          expression: 'default(jwt.sub, "anonymous")'
+        # --- LLM telemetry
+        - name: llm.is_streaming
+          expression: 'default(llm.streaming, false)'
+        - name: llm.usage.cached_tokens
+          expression: 'default(llm.cachedInputTokens, 0)'
+        - name: llm.usage.reasoning_tokens
+          expression: 'default(llm.reasoningTokens, 0)'
+        # First user message in the prompt (perf impact for large prompts)
+        - name: llm.prompt.user
+          expression: 'default(llm.prompt.filter(m, m.role == "user")[0].content, "")'
+        # LLM response content (perf impact for large responses)
+        - name: llm.completion.output
+          expression: 'default(llm.completion[0], "")'
 EOF
 ```
 

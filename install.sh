@@ -460,15 +460,7 @@ spec:
     oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway \
     --create-namespace --version $ENTERPRISE_AGW_VERSION \
     --set-string licensing.licenseKey=$SOLO_TRIAL_LICENSE_KEY \
-    --kube-context $KUBECONTEXT_CLUSTER1 --wait \
-    -f -<<EOF
-gatewayClassParametersRefs:
-  enterprise-agentgateway:
-    group: enterpriseagentgateway.solo.io
-    kind: EnterpriseAgentgatewayParameters
-    name: agentgateway-config
-    namespace: agentgateway-system
-EOF
+    --kube-context $KUBECONTEXT_CLUSTER1 --wait
 
   # Deploy gateway config
   kubectl apply --context $KUBECONTEXT_CLUSTER1 -f -<<'EOF'
