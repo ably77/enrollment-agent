@@ -750,9 +750,9 @@ deploy_workloads() {
 
   echo "Waiting for ingress gateway..."
   kubectl wait --for=condition=programmed gateway ingress \
-    -n agentgateway-system --context $ctx --timeout=120s
+    -n agentgateway-ingress --context $ctx --timeout=120s
   kubectl wait --for=condition=ready pod -l gateway.networking.k8s.io/gateway-name=ingress \
-    -n agentgateway-system --context $ctx --timeout=120s
+    -n agentgateway-ingress --context $ctx --timeout=120s
 
   # --- Apply ingress routes ---
   echo "=== Applying ingress routes ==="
@@ -785,7 +785,7 @@ spec:
   - "agw-ui.glootest.com"
   parentRefs:
   - name: ingress
-    namespace: agentgateway-system
+    namespace: agentgateway-ingress
   rules:
   - backendRefs:
     - name: solo-enterprise-ui
@@ -888,7 +888,7 @@ configure_global_services() {
 print_access_info() {
   # --- Done ---
   local LB_ADDR
-  LB_ADDR=$(get_lb_address ingress agentgateway-system "$KUBECONTEXT_CLUSTER1")
+  LB_ADDR=$(get_lb_address ingress agentgateway-ingress "$KUBECONTEXT_CLUSTER1")
 
   echo ""
   echo "============================================"

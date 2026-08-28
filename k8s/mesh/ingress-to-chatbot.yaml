@@ -12,7 +12,7 @@ spec:
   - from:
     - source:
         principals:
-        - "*/ns/agentgateway-system/sa/ingress"
+        - "*/ns/agentgateway-ingress/sa/ingress"
     to:
     - operation:
         ports: ["8501"]

@@ -58,8 +58,8 @@ cleanup_workloads() {
   echo "--- Deleting agent gateway resources ---"
   kubectl delete gateway agentgateway-proxy -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
   kubectl delete enterpriseagentgatewayparameters agentgateway-config -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
-  kubectl delete gateway ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
-  kubectl delete enterpriseagentgatewayparameters ingress-agentgateway-config -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
+  kubectl delete gateway ingress -n agentgateway-ingress --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
+  kubectl delete enterpriseagentgatewayparameters ingress-agentgateway-config -n agentgateway-ingress --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
   kubectl delete enterpriseagentgatewaypolicy --all -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
   kubectl delete secret enrollment-openai-secret -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
 
@@ -103,7 +103,7 @@ cleanup_infra() {
   done
 
   echo "--- Deleting infrastructure namespaces ---"
-  kubectl delete namespace agentgateway-system kagent monitoring --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
+  kubectl delete namespace agentgateway-system agentgateway-ingress kagent monitoring --context $KUBECONTEXT_CLUSTER1 --ignore-not-found 2>/dev/null || true
   kubectl delete namespace solo-enterprise --context $KUBECONTEXT_CLUSTER2 --ignore-not-found 2>/dev/null || true
 
   echo "--- Cleaning up generated files ---"

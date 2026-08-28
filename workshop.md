@@ -1889,7 +1889,7 @@ spec:
   - "agw-ui.glootest.com"
   parentRefs:
   - name: ingress
-    namespace: agentgateway-system
+    namespace: agentgateway-ingress
   rules:
   - backendRefs:
     - name: solo-enterprise-ui
@@ -1901,7 +1901,7 @@ spec:
 EOF
 
 # Wait for ingress
-kubectl rollout status deploy/ingress -n agentgateway-system --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
+kubectl rollout status deploy/ingress -n agentgateway-ingress --watch --timeout=60s --context $KUBECONTEXT_CLUSTER1
 ```
 
 ### 7.4 Open the Enrollment Chatbot
@@ -1910,13 +1910,13 @@ kubectl rollout status deploy/ingress -n agentgateway-system --watch --timeout=6
 
 ```bash
 # Get the LoadBalancer address
-kubectl get svc ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 \
+kubectl get svc ingress -n agentgateway-ingress --context $KUBECONTEXT_CLUSTER1 \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}'
 ```
 
 > **AWS/EKS:** EKS NLBs return a hostname, not an IP. Resolve it to get an IP for `/etc/hosts`:
 > ```bash
-> NLB_HOST=$(kubectl get svc ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 \
+> NLB_HOST=$(kubectl get svc ingress -n agentgateway-ingress --context $KUBECONTEXT_CLUSTER1 \
 >   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 > dig +short "$NLB_HOST" | head -1
 > ```

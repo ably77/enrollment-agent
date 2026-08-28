@@ -5,11 +5,16 @@
 # This is separate from agentgateway-proxy (ClusterIP:8080), which handles
 # LLM routing with guardrails/rate-limits and is NOT in the mesh.
 ---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentgateway-ingress
+---
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayParameters
 metadata:
   name: ingress-agentgateway-config
-  namespace: agentgateway-system
+  namespace: agentgateway-ingress
 spec:
   logging:
     level: info
@@ -38,7 +43,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: ingress
-  namespace: agentgateway-system
+  namespace: agentgateway-ingress
 spec:
   gatewayClassName: enterprise-agentgateway
   infrastructure:
