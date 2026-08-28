@@ -1264,7 +1264,7 @@ kubectl apply -f k8s/gateway/rate-limit.yaml --context $KUBECONTEXT_CLUSTER1
 
 **Access the Gloo UI:**
 
-Open http://ui.glootest.com — you'll see:
+Open http://agw-ui.glootest.com — you'll see:
 - Request traces for each LLM call
 - Token counts per request
 - Guardrail evaluations (blocked/allowed)
@@ -1796,7 +1796,7 @@ Look for these fields in the log output after running an MCP tool call:
 
 **View traces in the Gloo UI:**
 
-Open http://ui.glootest.com. MCP tool calls appear as separate spans in the trace view alongside LLM call spans — you can see both protocols flowing through the same gateway in a single request trace when the LLM uses the MCP tool.
+Open http://agw-ui.glootest.com. MCP tool calls appear as separate spans in the trace view alongside LLM call spans — you can see both protocols flowing through the same gateway in a single request trace when the LLM uses the MCP tool.
 
 > **For leadership:** Token counts, latency, and guardrail results are recorded for MCP tool calls exactly as they are for LLM calls. One audit trail for all AI traffic — function calling, MCP, and direct LLM requests.
 
@@ -1886,7 +1886,7 @@ metadata:
   namespace: kagent
 spec:
   hostnames:
-  - "ui.glootest.com"
+  - "agw-ui.glootest.com"
   parentRefs:
   - name: ingress
     namespace: agentgateway-system
@@ -1925,7 +1925,7 @@ kubectl get svc ingress -n agentgateway-system --context $KUBECONTEXT_CLUSTER1 \
 Add the resolved address to `/etc/hosts`:
 
 ```
-<INGRESS_IP> enroll.glootest.com grafana.glootest.com ui.glootest.com
+<INGRESS_IP> enroll.glootest.com grafana.glootest.com agw-ui.glootest.com
 ```
 
 Open http://enroll.glootest.com

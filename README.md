@@ -76,7 +76,7 @@ After install, add DNS entries pointing to the ingress LoadBalancer IP or config
 
 ```
 # /etc/hosts
-<INGRESS_IP>  enroll.glootest.com  grafana.glootest.com  ui.glootest.com
+<INGRESS_IP>  enroll.glootest.com  grafana.glootest.com  agw-ui.glootest.com
 ```
 
 Then access:
@@ -85,7 +85,7 @@ Then access:
 |-----|---------|
 | http://enroll.glootest.com | Enrollment chatbot |
 | http://grafana.glootest.com | Grafana (admin / prom-operator) |
-| http://ui.glootest.com | Gloo UI (traces) |
+| http://agw-ui.glootest.com | Gloo UI (traces) |
 
 ## Configuration
 

@@ -782,7 +782,7 @@ metadata:
   namespace: $ui_ns
 spec:
   hostnames:
-  - "ui.glootest.com"
+  - "agw-ui.glootest.com"
   parentRefs:
   - name: ingress
     namespace: agentgateway-system
@@ -898,7 +898,7 @@ print_access_info() {
   echo "Access via ingress gateway (requires /etc/hosts or DNS):"
   echo "  http://enroll.glootest.com    — Enrollment chatbot"
   echo "  http://grafana.glootest.com    — Grafana (admin / prom-operator)"
-  echo "  http://ui.glootest.com         — Gloo UI (traces)"
+  echo "  http://agw-ui.glootest.com     — Gloo UI (traces)"
   echo ""
   echo "Ingress LoadBalancer address: $LB_ADDR"
 
@@ -913,16 +913,16 @@ print_access_info() {
     local RESOLVED_IP
     RESOLVED_IP=$(dig +short "$LB_ADDR" 2>/dev/null | head -1)
     if [ -n "$RESOLVED_IP" ]; then
-      echo "  $RESOLVED_IP enroll.glootest.com grafana.glootest.com ui.glootest.com"
+      echo "  $RESOLVED_IP enroll.glootest.com grafana.glootest.com agw-ui.glootest.com"
     else
-      echo "  <RESOLVED_IP> enroll.glootest.com grafana.glootest.com ui.glootest.com"
+      echo "  <RESOLVED_IP> enroll.glootest.com grafana.glootest.com agw-ui.glootest.com"
     fi
     echo ""
     echo "NOTE: EKS NLB IPs can change. For production, use Route 53 CNAME records instead."
   else
     echo ""
     echo "Add to /etc/hosts:"
-    echo "  $LB_ADDR enroll.glootest.com grafana.glootest.com ui.glootest.com"
+    echo "  $LB_ADDR enroll.glootest.com grafana.glootest.com agw-ui.glootest.com"
   fi
 
   # Detect where solo-enterprise-ui is deployed

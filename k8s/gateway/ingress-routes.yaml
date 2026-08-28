@@ -2,7 +2,7 @@
 # All routes reference the 'ingress' gateway in agentgateway-system.
 #
 # /etc/hosts (pointing to the ingress LoadBalancer IP):
-#   <INGRESS_LB_IP> enroll.glootest.com grafana.glootest.com ui.glootest.com
+#   <INGRESS_LB_IP> enroll.glootest.com grafana.glootest.com agw-ui.glootest.com
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
