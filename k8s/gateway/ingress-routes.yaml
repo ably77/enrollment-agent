@@ -2,7 +2,7 @@
 # All routes reference the 'ingress' gateway in agentgateway-system.
 #
 # /etc/hosts (pointing to the ingress LoadBalancer IP):
-#   <INGRESS_LB_IP> enroll.glootest.com grafana.glootest.com agw-ui.glootest.com
+#   <INGRESS_LB_IP> enroll.try-solo.io grafana.try-solo.io agw-ui.try-solo.io
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -11,7 +11,7 @@ metadata:
   namespace: wgu-demo-frontend
 spec:
   hostnames:
-  - "enroll.glootest.com"
+  - "enroll.try-solo.io"
   parentRefs:
   - name: ingress
     namespace: agentgateway-ingress
@@ -31,7 +31,7 @@ metadata:
   namespace: monitoring
 spec:
   hostnames:
-  - "grafana.glootest.com"
+  - "grafana.try-solo.io"
   parentRefs:
   - name: ingress
     namespace: agentgateway-ingress

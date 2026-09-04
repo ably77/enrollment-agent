@@ -76,16 +76,16 @@ After install, add DNS entries pointing to the ingress LoadBalancer IP or config
 
 ```
 # /etc/hosts
-<INGRESS_IP>  enroll.glootest.com  grafana.glootest.com  agw-ui.glootest.com
+<INGRESS_IP>  enroll.try-solo.io  grafana.try-solo.io  agw-ui.try-solo.io
 ```
 
 Then access:
 
 | URL | Service |
 |-----|---------|
-| http://enroll.glootest.com | Enrollment chatbot |
-| http://grafana.glootest.com | Grafana (admin / prom-operator) |
-| http://agw-ui.glootest.com | Gloo UI (traces) |
+| http://enroll.try-solo.io | Enrollment chatbot |
+| http://grafana.try-solo.io | Grafana (admin / prom-operator) |
+| http://agw-ui.try-solo.io | Gloo UI (traces) |
 
 ## Configuration
 

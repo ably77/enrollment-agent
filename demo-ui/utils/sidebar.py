@@ -46,5 +46,5 @@ def render_sidebar():
 
         st.divider()
         st.markdown("**Observability**")
-        st.caption("Gloo UI: [agw-ui.glootest.com](http://agw-ui.glootest.com)")
-        st.caption("Grafana: [grafana.glootest.com](http://grafana.glootest.com)")
+        st.caption("Gloo UI: [agw-ui.try-solo.io](http://agw-ui.try-solo.io)")
+        st.caption("Grafana: [grafana.try-solo.io](http://grafana.try-solo.io)")
